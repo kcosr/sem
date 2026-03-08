@@ -248,4 +248,12 @@ mod tests {
             .iter()
             .any(|line| line.kind == LineKind::Removed));
     }
+
+    #[test]
+    fn render_change_handles_missing_content_without_panicking() {
+        let rendered = render_change(&change(None, None));
+        assert_eq!(rendered.unified_hunks, vec![0]);
+        assert_eq!(rendered.side_by_side_hunks, vec![0]);
+        assert_eq!(rendered.unified_lines[0].1, "content unavailable");
+    }
 }

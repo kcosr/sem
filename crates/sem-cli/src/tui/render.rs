@@ -229,15 +229,8 @@ mod tests {
     use crate::commands::diff::DiffView;
     use crate::tui::app::AppState;
 
-    #[test]
-    fn format_column_truncates_utf8_safely() {
-        let output = format_column(Some(1), "abc漢字def", 8);
-        assert!(output.contains('…'));
-    }
-
-    #[test]
-    fn draw_handles_narrow_width_with_side_by_side_fallback() {
-        let result = DiffResult {
+    fn sample_result() -> DiffResult {
+        DiffResult {
             changes: vec![SemanticChange {
                 id: "c1".to_string(),
                 entity_id: "f::x".to_string(),
@@ -263,7 +256,18 @@ mod tests {
             deleted_count: 0,
             moved_count: 0,
             renamed_count: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn format_column_truncates_utf8_safely() {
+        let output = format_column(Some(1), "abc漢字def", 8);
+        assert!(output.contains('…'));
+    }
+
+    #[test]
+    fn draw_handles_narrow_width_with_side_by_side_fallback() {
+        let result = sample_result();
 
         let mut app = AppState::from_diff_result(&result, DiffView::SideBySide);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -275,5 +279,17 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed on narrow width");
+    }
+
+    #[test]
+    fn draw_list_mode_with_help_overlay_succeeds() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with help overlay");
     }
 }

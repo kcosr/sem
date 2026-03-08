@@ -13,6 +13,8 @@ Git's line-based model doesn't match how developers think. You don't care that l
 ```bash
 # Entity-level diff
 sem diff
+sem diff --tui
+sem diff --tui --diff-view side-by-side
 
 # Entity-level blame (who last touched each function/class)
 sem blame src/auth.ts
@@ -28,6 +30,19 @@ sem graph --file-exts .py
 sem diff --file-exts .py .rs
 sem impact validateToken --file-exts .py
 ```
+
+## TUI key bindings
+
+`sem diff --tui`:
+
+- `↑/↓` or `j/k`: selection / detail scrolling
+- `Enter` / `Esc`: open and close entity detail
+- `Tab`: unified vs side-by-side toggle
+- `n/p`: hunk navigation
+- `PageUp/PageDown`: page scrolling in detail mode
+- `g/G`: top/bottom jump in active mode
+- `?`: help overlay
+- `q`: quit
 
 ## Languages
 
@@ -56,6 +71,12 @@ The library that weave, agenthub, effect-system, agent-lint, unified-build, and 
 - **Entity dependency graph** (cross-file, call/reference edges)
 - **Impact analysis** (transitive BFS through dependency graph)
 - **Git bridge** for reading file contents at any ref
+
+### sem-cli
+
+- **Diff command pipeline** split into input, compute, and output phases
+- **Interactive TUI** with list/detail modes via `ratatui` + `crossterm`
+- **Diff adapters** built on `similar` for multi-hunk unified and side-by-side rendering
 
 ## Build
 

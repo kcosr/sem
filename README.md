@@ -58,6 +58,10 @@ sem diff --from HEAD~5 --to HEAD
 # JSON output (for AI agents, CI pipelines)
 sem diff --format json
 
+# Interactive diff TUI
+sem diff --tui
+sem diff --tui --diff-view side-by-side
+
 # Read file changes from stdin (no git repo needed)
 echo '[{"filePath":"src/main.rs","status":"modified","beforeContent":"...","afterContent":"..."}]' \
   | sem diff --stdin --format json
@@ -74,6 +78,20 @@ sem impact validateToken
 # Entity-level blame
 sem blame src/auth.ts
 ```
+
+## TUI key bindings
+
+`sem diff --tui` supports:
+
+- `↑/↓` or `j/k`: move selection / scroll detail
+- `Enter`: open selected entity detail
+- `Esc`: close detail view
+- `Tab`: toggle unified vs side-by-side detail view
+- `n/p`: jump to next/previous hunk
+- `PageUp/PageDown`: scroll detail by page
+- `g/G`: jump to top/bottom
+- `?`: toggle help overlay
+- `q`: quit
 
 ## What it parses
 
@@ -133,11 +151,15 @@ sem diff --format json
   },
   "changes": [
     {
+      "id": "change::src/auth.ts::function::validateToken",
       "entityId": "src/auth.ts::function::validateToken",
       "changeType": "added",
       "entityType": "function",
       "entityName": "validateToken",
-      "filePath": "src/auth.ts"
+      "filePath": "src/auth.ts",
+      "structuralChange": true,
+      "afterStartLine": 12,
+      "afterEndLine": 28
     }
   ]
 }
