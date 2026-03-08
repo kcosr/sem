@@ -212,6 +212,22 @@ Gate:
 - Notes:
   - review completion confirmed from live session stream terminal events (`result.completed`).
 
+### 9.4 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `d0b6e71`
+- Acceptance evidence:
+  - manual: cross-checked `design.md`, `schema-proposal.md`, and this task plan for H0 consistency after applying accepted execution-stage review clarifications.
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to H0 contract-doc scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` not available in current environment; unrelated to H0 contract-doc scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (48 passed).
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+- Review run IDs + triage outcomes:
+  - `r_20260308182500599_9054f2f3` (`generic-gemini`): `accept` pairwise-lower-bound/self-compare clarity, empty synthetic-endpoint selectability, request ordering/test coverage clarifications; `defer` detached-head/merge-conflict semantics and live-endpoint perf/race hardening to H3; `reject` none.
+  - `r_20260308182540490_1480acb8` (`generic-pi`): `accept` schema required `snapshot`, `error` semantics lock, pairwise `baseEndpointId` ignore semantics, migration/test-matrix clarifications; `defer` versioning policy and additional H3 UX/perf hardening guidance; `reject` initial-load-action schema expansion and mandatory displayRef roundtrip.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-unified-stepping/schema-proposal.md`
