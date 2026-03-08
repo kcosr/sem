@@ -26,6 +26,7 @@ Deliverables:
 4. Lock persistence file path/shape and error semantics.
 5. Lock `logicalEntityKey` grammar and `targetContentHash` normalization.
 6. Lock comparator-target hash source semantics for commit/index/working endpoints.
+7. Lock toggle-under-filter cursor behavior and startup filter-restore behavior.
 
 Acceptance:
 1. No ambiguity on reviewed identity key semantics.
@@ -86,13 +87,18 @@ Gate:
 | reviewed toggle state | app tests | `cargo test -p sem-cli` targeted app tests |
 | filter cycle state | app tests | filter state reducer assertions |
 | hidden-row navigation | app tests | skip/no-op behavior assertions |
+| toggle-under-filter cursor behavior | app tests | focused-row hide path advances deterministically or falls back to no-match |
 | reviewed identity carryover | unit/integration | identity+hash match/mismatch tests |
 | stepping compatibility | unit/integration | pairwise/cumulative carryover invariants |
 | endpoint-kind compatibility | unit/integration | comparator target endpoint commit/index/working coverage |
 | fallback identity key | unit tests | fallback key grammar + ordinal tests |
+| added entity hash path | unit/integration | add-path target-content hash + carryover tests |
 | deleted entity handling | unit/integration | deleted-content hash + carryover tests |
+| non-UTF-8 hash material | unit/integration | invalid UTF-8 treated as missing hash material |
 | persistence behavior | unit tests | missing/corrupt/version/repo mismatch + atomic write tests |
 | persistence compaction | unit tests | dedupe + max-record cap assertions |
+| filter preference restore | unit tests | `uiPrefs.reviewFilter` load/default behavior |
+| debounce exit flush | unit/integration | state mutation persists on shutdown flush |
 | filtered rendering | render tests | reviewed markers + file header suppression |
 | footer filter cell | render tests | `r: all|unreviewed|reviewed` coexists with `m: <mode>` |
 | no-match rendering | render tests | explicit empty-state row |
@@ -122,6 +128,8 @@ Gate:
 - Mitigation: explicit footer composition contract + render regression tests.
 7. Risk: footer-cell contract drift across topics.
 - Mitigation: enforce `diff-tui-footer-cell-layout` addendum as shared source of truth.
+8. Risk: repo path relocation invalidates `repoId` and suppresses prior review records.
+- Mitigation: explicit canonicalization contract + non-fatal mismatch semantics and status hint.
 
 ## 7. Deferred Items
 1. Hunk-level review state.

@@ -32,7 +32,7 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 ## 6. Key Decisions
 1. Reviewed state is entity-level only in v1.
 2. Toggle key is `Space` in list and detail modes.
-3. Filter key cycles `all -> unreviewed -> reviewed -> all` (binding finalized in H0; proposed `r`).
+3. Filter key cycles `all -> unreviewed -> reviewed -> all` (locked keybinding: `r`).
 4. Filter semantics:
    - rows not matching filter are hidden
    - file header is hidden if file has zero visible entities
@@ -40,6 +40,7 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 5. Navigation semantics under filter:
    - list up/down and detail left/right skip hidden rows
    - if no visible rows, movement and enter are no-op
+   - if a toggle causes the focused row to become hidden by the active filter, selection advances to the next visible row (wrapping); if none remain, the explicit no-match state is shown
 6. Review identity key for persistence is composite:
    - `logicalEntityKey`: stable entity identity key string
    - `targetContentHash`: normalized hash of comparator target-side entity content
@@ -47,29 +48,32 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 7. `logicalEntityKey` v1 grammar is locked:
    - preferred: `entityId::<entity_id>` when parser provides stable `entity_id`
    - fallback: `fallback::<canonicalPath>::<entityType>::<entityName>::<occurrenceOrdinal>`
-   - `occurrenceOrdinal` is deterministic index within same `(canonicalPath, entityType, entityName)` group using semantic emission order for current snapshot
+   - `occurrenceOrdinal` is deterministic 1-based index within same `(canonicalPath, entityType, entityName)` group using semantic emission order for current snapshot
+   - semantic emission order for this topic is the post-load TUI row order after stable file-path grouping, preserving within-file change emission order
 8. `targetContentHash` normalization is locked:
    - input is comparator target-side entity text (for delete: pre-state entity text)
    - normalize line endings to `\n`
    - preserve internal whitespace and indentation
    - trim trailing `\n` run to a single terminal `\n`
    - hash algorithm: `sha256` of normalized UTF-8 bytes, encoded as `sha256:<hex>`
-9. Deleted entities use deleted-target hash material from pre-state content and are still stored in `targetContentHash` using same normalization/hash format.
+   - non-UTF-8 hash material is treated as missing hash material (non-fatal)
+9. Added entities use target-side post-state content as hash material; deleted entities use deleted-target hash material from pre-state content. Both use the same normalization/hash format.
 10. Persistence file path is local repo metadata:
    - `.sem/tui-review-state.json`
 11. Persisted data v1:
    - reviewed records (required)
-   - UI review filter preference (`reviewFilter`) allowed
+   - UI review filter preference (`reviewFilter`) allowed and loaded on startup when valid
    - no persisted cursor/range resume
 12. Persistence semantics:
    - unreview removes record (no explicit `reviewed=false` record retained)
    - writes are atomic (temp + rename)
    - writes are debounced (`<=500ms`) and flushed on exit
    - startup compaction deduplicates by key and enforces max-record cap (`20,000`, drop oldest by `updatedAt`)
+   - `updatedAt` format is canonical UTC seconds: `YYYY-MM-DDTHH:MM:SSZ`
 13. Multi-instance behavior in v1 is accepted limitation:
    - last-writer-wins for concurrent sessions
 14. Repo binding:
-   - `repoId` is hash of canonical repo root path (`sha256:...`)
+   - `repoId` is hash of canonical repo root path (`sha256:...`) after canonicalization (resolve symlinks and normalize trailing separators)
    - mismatch on load is non-fatal and file contents are ignored for session
 15. Cross-range/mode behavior:
    - reviewed status is shown whenever identity key matches
@@ -93,7 +97,7 @@ This is a CLI/TUI contract (not HTTP).
 
 ### 7.1 Keyboard Contract
 1. `Space`: toggle reviewed on focused entity.
-2. `r` (proposed): cycle filter state.
+2. `r`: cycle filter state.
 3. Existing navigation keys remain unchanged.
 4. In detail mode, `Space` applies to the currently opened entity.
 5. Stepping/mode keys (`[`/`]`, `m`) remain unchanged and independent of review actions.
@@ -103,14 +107,16 @@ This is a CLI/TUI contract (not HTTP).
 2. `unreviewed`: show only entities without matching reviewed record.
 3. `reviewed`: show only entities with matching reviewed record.
 4. Empty filtered result produces explicit no-match state; does not auto-reset filter.
-5. Footer filter state is rendered as `r: <state>`.
-6. Footer cell rendering inherits shared separator and ordering behavior from footer-cell contract.
+5. If toggling reviewed state hides the focused row under active filter, selection advances to next visible row (wrapping); if no visible rows remain, no-match state is rendered.
+6. Footer filter state is rendered as `r: <state>`.
+7. Footer cell rendering inherits shared separator and ordering behavior from footer-cell contract.
 
 ### 7.3 Persistence Contract
 1. File path: `.sem/tui-review-state.json`.
 2. Writes are atomic (temp + rename) to avoid corruption.
 3. Missing/corrupt/version-mismatch/repo-mismatch file is non-fatal; app continues with empty in-memory state and status hint.
-4. H3 docs include guidance that `.sem/tui-review-state.json` is local state and should not be committed.
+4. Startup filter state defaults to `all` when persisted `uiPrefs.reviewFilter` is missing/invalid.
+5. H3 docs include guidance that `.sem/tui-review-state.json` is local state and should not be committed.
 
 ## 8. Service / Module Design
 1. `tui/app.rs`
@@ -131,6 +137,7 @@ This is a CLI/TUI contract (not HTTP).
 1. Persistence read error: non-fatal, start with empty state, show warning hint.
 2. Persistence write error: non-fatal, keep in-memory state for session, show warning hint.
 3. Hash material unavailable: non-fatal; entity considered unreviewed with status hint.
+4. Invalid UTF-8 content for hash material: non-fatal; treated as missing hash material.
 
 ## 10. Migration Strategy
 1. New feature is additive and TUI-only.
@@ -147,15 +154,20 @@ This is a CLI/TUI contract (not HTTP).
    - filter cycling and projection
    - hidden-row navigation skip behavior
    - no-op behavior when no visible rows
+   - toggle-under-filter cursor advance behavior
 2. Identity/hash tests:
    - carryover across range/mode when identity+hash match
    - no carryover when hash differs
    - fallback `logicalEntityKey` construction and collision grouping behavior
+   - added-entity hash path behavior
    - deleted-entity hash path behavior
+   - non-UTF-8 hash-material fallback behavior
 3. Persistence tests:
    - load missing/corrupt/version-mismatch/repo-mismatch file behavior
    - atomic write behavior
    - compaction/dedupe/max-record cap
+   - startup `uiPrefs.reviewFilter` restore/default behavior
+   - debounce flush-on-exit behavior
    - multi-writer last-write-wins expectation documented by test note
 4. Render tests:
    - reviewed markers

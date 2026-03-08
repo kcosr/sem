@@ -98,7 +98,11 @@ Define an internal persistence and runtime contract for entity-level reviewed st
         "properties": {
           "logicalEntityKey": { "type": "string", "minLength": 1 },
           "targetContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-          "updatedAt": { "type": "string", "format": "date-time" }
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+          }
         },
         "additionalProperties": false
       }
@@ -121,6 +125,7 @@ Define an internal persistence and runtime contract for entity-level reviewed st
    - `working`
 8. Review toggle/filter actions never mutate step cursor, step mode, or comparator endpoint IDs.
 9. Review filter footer cell format is exactly `r: <all|unreviewed|reviewed>`.
+10. If a toggle causes focused row to become hidden by active filter, selection advances to next visible row (wrapping); if none remain, explicit no-match state is shown.
 
 ## 5. Deterministic Reject / Status Lock
 1. Corrupt persistence file => ignore file, keep session usable, show non-fatal status.
@@ -128,15 +133,17 @@ Define an internal persistence and runtime contract for entity-level reviewed st
 3. Repo ID mismatch => ignore file with non-fatal status.
 4. Missing hash material => entity cannot be matched to stored reviewed state for that render cycle.
 5. Unknown comparator endpoint kind for hash source => treat as missing hash material (non-fatal).
+6. Non-UTF-8 hash material => treat as missing hash material (non-fatal).
 
 ## 6. Notes
 1. `logicalEntityKey` grammar (from design lock):
    - `entityId::<entity_id>` preferred
    - fallback `fallback::<canonicalPath>::<entityType>::<entityName>::<occurrenceOrdinal>`
-2. `targetContentHash` is normalized target-side content hash; delete-path uses pre-state entity content as hash material.
-3. `repoId` is hash of canonical repo root path.
+2. `targetContentHash` is normalized target-side content hash; add-path uses target-side post-state content and delete-path uses pre-state entity content as hash material.
+3. `repoId` is hash of canonical repo root path after canonicalization (resolve symlinks and normalize trailing separators).
 4. This schema is internal; no external JSON API contract changes.
 5. Hunk-level review state and annotations are out of scope for this topic.
 6. Cursor/range resume restoration is deferred.
 7. Footer rendering with review filter indicator must preserve `m: <mode>` step-mode cell from unified stepping.
 8. Footer cell ordering follows `docs/implementation/diff-tui-footer-cell-layout/` (`m`, `r`, `e`).
+9. `updatedAt` uses canonical UTC seconds format: `YYYY-MM-DDTHH:MM:SSZ`.
