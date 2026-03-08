@@ -48,8 +48,9 @@ Operators want one consistent path model and mode toggling while keeping existin
 5. Mode definitions:
    - `pairwise`: compare `S[i-1] -> S[i]` at cursor `i`.
    - `cumulative`: compare `base -> S[i]`.
-6. Single-endpoint path behavior:
+6. Single-endpoint and pairwise-lower-bound behavior:
    - both modes render stable no-op comparison (`from == to`) with no crash.
+   - at cursor `i=0` in pairwise mode, effective comparator is `S[0] -> S[0]` (not an error).
 7. Base selection for `cumulative`:
    - explicit `--from/--to`: base is fixed `from`.
    - implicit/no explicit range: base is anchored to current cursor when cumulative is toggled on.
@@ -61,12 +62,14 @@ Operators want one consistent path model and mode toggling while keeping existin
    - cumulative: comparator `from` is current base and comparator `to` is cursor endpoint.
    - pairwise: comparator endpoints are effective `S[i-1]` and `S[i]`.
    - "left/right" refers to comparator labels, not side-by-side content panes.
-10. `INDEX`/`WORKING` are live (re-evaluated per step request), not frozen snapshots.
+10. `INDEX`/`WORKING` are live (re-evaluated per step request), not frozen snapshots, and remain selectable even when currently empty/no-op.
 11. Step-mode CLI flag and key interaction:
    - `--step-mode` sets startup mode only.
    - `m` remains available to toggle mode during session.
 12. Backpressure/cancellation contract in v1:
    - latest-request-wins, coalesced single pending request, stale-result rejection.
+13. Request/response ordering:
+   - request IDs are monotonic within a session; responses with lower applied IDs are treated as stale.
 
 ## 7. Contract / Interface Semantics
 This is CLI/TUI contract design (not HTTP).
@@ -93,6 +96,7 @@ This is CLI/TUI contract design (not HTTP).
 3. `WORKING` resolves to unstaged+untracked snapshot.
 4. For live semantics, synthetic endpoints are recomputed each request.
 5. Outside valid git context, synthetic endpoint resolution fails non-fatally via normal load-failure semantics.
+6. Header/footer display labels are derived from endpoint identity at render time (`displayRef` is optional presentation metadata, not identity).
 
 ## 8. Service / Module Design
 1. Introduce unified endpoint + path planner in `commands/diff.rs`.
@@ -111,7 +115,8 @@ This is CLI/TUI contract design (not HTTP).
 1. Backward-compatible CLI:
    - `--commit` continues to work.
 2. Preserve existing pairwise commit intuition.
-3. Introduce new mode behavior incrementally behind explicit phase gates.
+3. Existing commit-only `--from/--to` behavior remains unchanged when pseudo-endpoints are not used.
+4. Introduce new mode behavior incrementally behind explicit phase gates.
 
 ## 11. Test Strategy
 1. Endpoint path planning tests (`commit`, `range`, `INDEX`, `WORKING`).

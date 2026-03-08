@@ -104,7 +104,7 @@ Lock an internal request/response contract for unified endpoint stepping with mo
 {
   "$id": "sem.tui.unified-step.response.v1",
   "type": "object",
-  "required": ["appliedRequestId", "status", "retainPreviousSnapshot"],
+  "required": ["appliedRequestId", "status", "snapshot", "retainPreviousSnapshot"],
   "properties": {
     "appliedRequestId": { "type": "integer", "minimum": 0 },
     "status": {
@@ -172,16 +172,21 @@ Lock an internal request/response contract for unified endpoint stepping with mo
 3. Response always states effective comparator endpoints (`comparison.fromEndpointId`, `comparison.toEndpointId`).
 4. Boundary and failure are non-fatal and preserve prior view.
 5. `displayRef` is presentation-only; endpoint identity is `endpointId`.
+6. Pairwise lower-bound behavior (`index=0`) is a stable self-comparison (`fromEndpointId == toEndpointId`) and is not a failure.
+7. `INDEX`/`WORKING` remain valid selectable endpoints even when they currently resolve to empty/no-op diffs.
+8. `requestId` is session-monotonic and pairs with `appliedRequestId` for deterministic stale-result handling.
 
 ## 5. Deterministic Reject / Status Lock
-1. Invalid endpoint => `loadFailed` with `retainPreviousSnapshot=true`.
-2. Out-of-range step => `boundaryNoop`.
+1. Invalid endpoint => `loadFailed` with `retainPreviousSnapshot=true` and non-null `error`.
+2. Out-of-range step (`stepOlder` at `index=0`, `stepNewer` at max index) => `boundaryNoop`.
 3. Unsupported source mode => `unsupportedMode`.
-4. Stale response => `ignoredStaleResult`.
-5. `baseEndpointId = null` in cumulative mode means "re-anchor to current cursor on toggle-on" per design lock.
+4. Stale response => `ignoredStaleResult` when `appliedRequestId` is less than latest requested `requestId`.
+5. `baseEndpointId = null` in cumulative mode means "re-anchor to current cursor on toggle-on"; in `pairwise` mode `baseEndpointId` is ignored.
+6. `loaded` requires non-null `snapshot`; non-loaded statuses carry `snapshot: null`.
 
 ## 6. Notes
 1. Symbolic refs are resolved to SHA endpoint IDs before cursor/runtime storage.
 2. This contract is internal to CLI/TUI runtime architecture.
 3. Existing external JSON formatter API remains unchanged.
 4. Dynamic bound editing is deferred and intentionally absent from v1 schema.
+5. Cursor `displayRef` in requests is optional presentation metadata; runtime display labels are resolved from endpoint identity.

@@ -88,10 +88,13 @@ Gate:
 | live synthetic endpoints | integration/unit | repeated requests with changed staging/working |
 | pairwise orientation | unit tests | cursor endpoint selection assertions |
 | cumulative anchor behavior | unit tests | base selection/re-anchor assertions |
+| base endpoint invariants | unit tests | `baseEndpointId` null/ignored semantics assertions by mode |
 | mode toggle behavior | app/render tests | `m` toggle state + comparator header |
 | startup defaults | CLI tests | explicit range vs implicit vs commit invocation |
+| initial startup contract | unit/integration | initial mode/cursor/comparator assertions before first step |
 | single-endpoint edge | unit/integration | one-endpoint path semantics |
 | full interaction loop | integration test | keypress -> reload -> render path |
+| stale-result rejection | unit/integration | monotonic request/applied request ordering assertions |
 | live endpoint transitions | integration/unit | empty <-> populated INDEX/WORKING transitions |
 | json compatibility | regression test | `--format json` golden/snapshot checks |
 | regression safety | full tests | `cargo test -p sem-cli && cargo test -p sem-core` |
