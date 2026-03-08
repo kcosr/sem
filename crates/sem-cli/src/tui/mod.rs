@@ -269,6 +269,42 @@ mod tests {
         assert_eq!(second.status, CommitLoadStatus::UnsupportedMode);
     }
 
+    #[test]
+    fn reload_coordinator_coalesces_rapid_step_sequence_to_latest_pending_request() {
+        let mut coordinator = ReloadCoordinator::new(CommitNavigationContext {
+            cwd: String::new(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Unsupported,
+            lineage: vec![],
+            lineage_index: HashMap::new(),
+        });
+
+        let sequence = [
+            CommitStepAction::Older,
+            CommitStepAction::Older,
+            CommitStepAction::Older,
+            CommitStepAction::Newer,
+            CommitStepAction::Newer,
+        ];
+        for action in sequence {
+            let request_id = coordinator.next_request_id();
+            coordinator.queue_request(CommitStepRequest {
+                request_id,
+                action,
+                current_sha: String::new(),
+                source_mode: TuiSourceMode::Unsupported,
+            });
+        }
+
+        let first = wait_for_response(&mut coordinator);
+        assert_eq!(first.applied_request_id, 1);
+        assert_eq!(first.status, CommitLoadStatus::IgnoredStaleResult);
+
+        let second = wait_for_response(&mut coordinator);
+        assert_eq!(second.applied_request_id, 5);
+        assert_eq!(second.status, CommitLoadStatus::UnsupportedMode);
+    }
+
     fn wait_for_response(
         coordinator: &mut ReloadCoordinator,
     ) -> crate::commands::diff::CommitStepResponse {

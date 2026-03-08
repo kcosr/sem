@@ -61,6 +61,7 @@ sem diff --format json
 # Interactive diff TUI
 sem diff --tui
 sem diff --tui --diff-view side-by-side
+sem diff --tui --commit HEAD~3
 
 # Read file changes from stdin (no git repo needed)
 echo '[{"filePath":"src/main.rs","status":"modified","beforeContent":"...","afterContent":"..."}]' \
@@ -85,6 +86,7 @@ sem blame src/auth.ts
 
 - `↑/↓` or `j/k`: move selection / scroll detail
 - `Enter`: open selected entity detail
+- `[` / `]`: step older/newer commit snapshot (commit mode only)
 - `Esc`: close detail view
 - `Tab`: toggle unified vs side-by-side detail view
 - `n/p`: jump to next/previous hunk
@@ -92,6 +94,8 @@ sem blame src/auth.ts
 - `g/G`: jump to top/bottom
 - `?`: toggle help overlay
 - `q`: quit
+
+Commit stepping is enabled only for `sem diff --tui --commit <rev>`. In `--stdin`, two-file, staged, and range modes, `[`/`]` are inert and the TUI shows an unavailable hint.
 
 ## What it parses
 

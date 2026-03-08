@@ -647,6 +647,43 @@ mod tests {
         assert!(output.contains("No semantic changes detected."));
     }
 
+    #[test]
+    fn is_commit_navigation_mode_requires_explicit_commit_tui_mode() {
+        let mut options = base_options();
+        options.tui = true;
+        options.commit = Some("HEAD~1".to_string());
+        assert!(is_commit_navigation_mode(&options));
+
+        let mut without_commit = base_options();
+        without_commit.tui = true;
+        assert!(!is_commit_navigation_mode(&without_commit));
+
+        let mut with_stdin = base_options();
+        with_stdin.tui = true;
+        with_stdin.commit = Some("HEAD~1".to_string());
+        with_stdin.stdin = true;
+        assert!(!is_commit_navigation_mode(&with_stdin));
+
+        let mut with_staged = base_options();
+        with_staged.tui = true;
+        with_staged.commit = Some("HEAD~1".to_string());
+        with_staged.staged = true;
+        assert!(!is_commit_navigation_mode(&with_staged));
+
+        let mut with_range = base_options();
+        with_range.tui = true;
+        with_range.commit = Some("HEAD~1".to_string());
+        with_range.from = Some("HEAD~3".to_string());
+        with_range.to = Some("HEAD~1".to_string());
+        assert!(!is_commit_navigation_mode(&with_range));
+
+        let mut with_files = base_options();
+        with_files.tui = true;
+        with_files.commit = Some("HEAD~1".to_string());
+        with_files.files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        assert!(!is_commit_navigation_mode(&with_files));
+    }
+
     fn init_repo_with_three_commits(base: &Path) -> Vec<String> {
         std::fs::create_dir_all(base).expect("temp repo dir should be created");
 

@@ -955,7 +955,7 @@ mod tests {
     use sem_core::model::change::{ChangeType, SemanticChange};
     use sem_core::parser::differ::DiffResult;
 
-    use crate::commands::diff::DiffView;
+    use crate::commands::diff::{CommitCursor, DiffView, TuiSourceMode};
     use crate::tui::app::AppState;
 
     fn sample_result() -> DiffResult {
@@ -1020,6 +1020,29 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with help overlay");
+    }
+
+    #[test]
+    fn draw_list_mode_with_commit_navigation_header_succeeds() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            Some(CommitCursor {
+                rev_label: Some("HEAD~2".to_string()),
+                sha: "0123456789abcdef".to_string(),
+                subject: "feat: sample".to_string(),
+                has_older: true,
+                has_newer: true,
+            }),
+        );
+        app.set_list_header_command("sem diff --tui --commit HEAD~2".to_string());
+        app.set_commit_loading(true);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with commit metadata header");
     }
 
     #[test]

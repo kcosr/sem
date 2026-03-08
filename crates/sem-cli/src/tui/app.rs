@@ -897,4 +897,33 @@ mod tests {
         );
         assert!(!app.commit_loading());
     }
+
+    #[test]
+    fn app_quits_immediately_even_while_commit_reload_is_marked_loading() {
+        let mut app = app();
+        app.set_commit_loading(true);
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn load_failed_response_keeps_existing_rows_and_reports_retained_snapshot() {
+        let mut app = app();
+        let baseline_rows = app.rows().len();
+
+        app.apply_commit_step_response(CommitStepResponse {
+            applied_request_id: 11,
+            status: CommitLoadStatus::LoadFailed,
+            snapshot: None,
+            error: Some("unable to resolve commit".to_string()),
+            retain_previous_snapshot: true,
+        });
+
+        assert_eq!(app.rows().len(), baseline_rows);
+        assert_eq!(
+            app.commit_status_message(),
+            Some("unable to resolve commit (previous snapshot retained)")
+        );
+        assert!(!app.commit_loading());
+    }
 }

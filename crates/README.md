@@ -15,6 +15,7 @@ Git's line-based model doesn't match how developers think. You don't care that l
 sem diff
 sem diff --tui
 sem diff --tui --diff-view side-by-side
+sem diff --tui --commit HEAD~3
 
 # Entity-level blame (who last touched each function/class)
 sem blame src/auth.ts
@@ -37,12 +38,15 @@ sem impact validateToken --file-exts .py
 
 - `↑/↓` or `j/k`: selection / detail scrolling
 - `Enter` / `Esc`: open and close entity detail
+- `[` / `]`: step older/newer commit snapshot (commit mode only)
 - `Tab`: unified vs side-by-side toggle
 - `n/p`: hunk navigation
 - `PageUp/PageDown`: page scrolling in detail mode
 - `g/G`: top/bottom jump in active mode
 - `?`: help overlay
 - `q`: quit
+
+Commit stepping is enabled only for `sem diff --tui --commit <rev>`. In `--stdin`, two-file, staged, and range modes, `[`/`]` remain inert.
 
 ## Languages
 
@@ -89,7 +93,7 @@ cargo build --release
 
 ```bash
 cargo test
-# 25 tests
+# 86 tests across workspace (45 sem-cli + 41 sem-core)
 ```
 
 ## License
