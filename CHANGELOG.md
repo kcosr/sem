@@ -15,6 +15,8 @@
 - First-parent commit cursor metadata in TUI header (`HEAD~N` when derivable, short SHA, subject).
 - Async reload worker with request coalescing and stale-result suppression (`latest request wins`).
 - Non-fatal boundary/unsupported/error status hints with previous snapshot retention on load failure.
+- Diff TUI reviewed-state controls: `Space` to toggle reviewed on focused/opened entity and `r` to cycle filter (`all`/`unreviewed`/`reviewed`).
+- Local review-state persistence at `.sem/tui-review-state.json` with per-repo filter preference and reviewed carryover based on identity + target hash.
 
 ### Changed
 - `sem-core` `SemanticChange` now includes optional line-range metadata:
@@ -26,9 +28,12 @@
 - TUI startup defaults are now deterministic by invocation type:
   - explicit `--from/--to` => `cumulative`
   - implicit/latest and `--commit` => `pairwise`
+- TUI list/detail footer cells now include review filter state (`r: <all|unreviewed|reviewed>`) alongside step mode (`m: <pairwise|cumulative>`).
+- Filtered TUI list rendering now hides file headers with zero visible entities and shows an explicit no-match row when filter output is empty.
 
 ### Testing
 - Added sem-core tests for line-range population and serialization behavior.
 - Added sem-cli tests for CLI contracts, TUI state machine, hunk boundaries, and constrained-width fallback rendering.
 - Added sem-cli commit-navigation tests for lineage stepping boundaries (including root), rapid request coalescing (`[ [ [ ] ]`), stale-result rejection, unsupported-mode inert behavior, detail-mode empty snapshot stability, and quit-during-load behavior.
 - Added sem-cli unified-stepping tests for mode comparator selection, startup defaults/`--step-mode` (explicit range, commit, staged, and implicit/latest), pseudo-endpoint range bootstrap, startup refresh loading, JSON range compatibility for `HEAD..WORKING`, and `INDEX`/`WORKING` empty<->populated transition hardening.
+- Added sem-cli review-state coverage for filtered navigation/no-match rendering, detail-mode review toggle/filter behavior, reviewed marker rendering, file-header suppression under filters, and carryover/non-carryover behavior across snapshot reloads.

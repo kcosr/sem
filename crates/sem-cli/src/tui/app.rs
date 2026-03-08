@@ -881,17 +881,40 @@ mod tests {
 
     use crate::commands::diff::StepEndpointKind;
 
+    const BASELINE_BEFORE: &str =
+        "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n";
+    const BASELINE_AFTER: &str =
+        "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
+
     fn change(file: &str, name: &str, before: &str, after: &str) -> SemanticChange {
+        change_with_identity(
+            file,
+            name,
+            &format!("{file}::{name}"),
+            ChangeType::Modified,
+            Some(before),
+            Some(after),
+        )
+    }
+
+    fn change_with_identity(
+        file: &str,
+        name: &str,
+        entity_id: &str,
+        change_type: ChangeType,
+        before: Option<&str>,
+        after: Option<&str>,
+    ) -> SemanticChange {
         SemanticChange {
             id: format!("change::{name}"),
-            entity_id: format!("{file}::{name}"),
-            change_type: ChangeType::Modified,
+            entity_id: entity_id.to_string(),
+            change_type,
             entity_type: "function".to_string(),
             entity_name: name.to_string(),
             file_path: file.to_string(),
             old_file_path: None,
-            before_content: Some(before.to_string()),
-            after_content: Some(after.to_string()),
+            before_content: before.map(str::to_string),
+            after_content: after.map(str::to_string),
             commit_sha: None,
             author: None,
             timestamp: None,
@@ -904,12 +927,10 @@ mod tests {
     }
 
     fn app() -> AppState {
-        let before = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n";
-        let after = "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
         let result = DiffResult {
             changes: vec![
-                change("b.ts", "beta", before, after),
-                change("a.ts", "alpha", before, after),
+                change("b.ts", "beta", BASELINE_BEFORE, BASELINE_AFTER),
+                change("a.ts", "alpha", BASELINE_BEFORE, BASELINE_AFTER),
             ],
             file_count: 2,
             added_count: 0,
@@ -953,6 +974,16 @@ mod tests {
             has_newer: false,
         };
         (endpoints, endpoint_index, cursor)
+    }
+
+    fn loaded_response(snapshot: CommitSnapshot) -> CommitStepResponse {
+        CommitStepResponse {
+            applied_request_id: 42,
+            status: CommitLoadStatus::Loaded,
+            snapshot: Some(snapshot),
+            error: None,
+            retain_previous_snapshot: false,
+        }
     }
 
     #[test]
@@ -1586,5 +1617,302 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert_eq!(app.review_filter(), ReviewFilter::Unreviewed);
         assert!(app.detail_title().contains("beta"));
+    }
+
+    #[test]
+    fn reviewed_state_carries_across_snapshot_when_identity_and_hash_match() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.is_row_reviewed(0));
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                endpoint_id: "working".to_string(),
+                index: 2,
+                rev_label: Some("WORKING".to_string()),
+                sha: "working".to_string(),
+                subject: "working tree".to_string(),
+                has_older: true,
+                has_newer: false,
+            },
+            result: DiffResult {
+                changes: vec![change(
+                    "a.ts",
+                    "alpha",
+                    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n",
+                    "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n",
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            mode: StepMode::Cumulative,
+            base_endpoint_id: Some("commit:aaaaaaa".to_string()),
+            comparison: StepComparison {
+                from_endpoint_id: "commit:aaaaaaa".to_string(),
+                to_endpoint_id: "working".to_string(),
+            },
+        };
+
+        app.apply_commit_step_response(loaded_response(snapshot));
+        assert_eq!(app.step_mode(), StepMode::Cumulative);
+        assert_eq!(app.rows().len(), 1);
+        assert!(app.is_row_reviewed(0));
+    }
+
+    #[test]
+    fn reviewed_state_does_not_carry_when_target_hash_changes() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.is_row_reviewed(0));
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                endpoint_id: "working".to_string(),
+                index: 2,
+                rev_label: Some("WORKING".to_string()),
+                sha: "working".to_string(),
+                subject: "working tree".to_string(),
+                has_older: true,
+                has_newer: false,
+            },
+            result: DiffResult {
+                changes: vec![change(
+                    "a.ts",
+                    "alpha",
+                    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n",
+                    "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed AGAIN\nline12\n",
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            mode: StepMode::Cumulative,
+            base_endpoint_id: Some("commit:aaaaaaa".to_string()),
+            comparison: StepComparison {
+                from_endpoint_id: "commit:aaaaaaa".to_string(),
+                to_endpoint_id: "working".to_string(),
+            },
+        };
+
+        app.apply_commit_step_response(loaded_response(snapshot));
+        assert_eq!(app.rows().len(), 1);
+        assert!(!app.is_row_reviewed(0));
+    }
+
+    #[test]
+    fn added_entity_carries_review_state_with_index_endpoint_target() {
+        let mut app = AppState::from_diff_result(
+            &DiffResult {
+                changes: vec![change_with_identity(
+                    "new.ts",
+                    "new_fn",
+                    "new.ts::new_fn",
+                    ChangeType::Added,
+                    None,
+                    Some("fn new_fn() {\n  created();\n}\n"),
+                )],
+                file_count: 1,
+                added_count: 1,
+                modified_count: 0,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            DiffView::Unified,
+        );
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.is_row_reviewed(0));
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                endpoint_id: "index".to_string(),
+                index: 2,
+                rev_label: Some("INDEX".to_string()),
+                sha: "index".to_string(),
+                subject: "index snapshot".to_string(),
+                has_older: true,
+                has_newer: false,
+            },
+            result: DiffResult {
+                changes: vec![change_with_identity(
+                    "new.ts",
+                    "new_fn",
+                    "new.ts::new_fn",
+                    ChangeType::Added,
+                    None,
+                    Some("fn new_fn() {\n  created();\n}\n"),
+                )],
+                file_count: 1,
+                added_count: 1,
+                modified_count: 0,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            mode: StepMode::Cumulative,
+            base_endpoint_id: Some("commit:aaaaaaa".to_string()),
+            comparison: StepComparison {
+                from_endpoint_id: "commit:aaaaaaa".to_string(),
+                to_endpoint_id: "index".to_string(),
+            },
+        };
+
+        app.apply_commit_step_response(loaded_response(snapshot));
+        assert!(app.is_row_reviewed(0));
+    }
+
+    #[test]
+    fn deleted_entity_carries_review_state_when_before_content_matches() {
+        let mut app = AppState::from_diff_result(
+            &DiffResult {
+                changes: vec![change_with_identity(
+                    "old.ts",
+                    "legacy",
+                    "old.ts::legacy",
+                    ChangeType::Deleted,
+                    Some("fn legacy() {\n  old_logic();\n}\n"),
+                    None,
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 0,
+                deleted_count: 1,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            DiffView::Unified,
+        );
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.is_row_reviewed(0));
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                endpoint_id: "working".to_string(),
+                index: 2,
+                rev_label: Some("WORKING".to_string()),
+                sha: "working".to_string(),
+                subject: "working tree".to_string(),
+                has_older: true,
+                has_newer: false,
+            },
+            result: DiffResult {
+                changes: vec![change_with_identity(
+                    "old.ts",
+                    "legacy",
+                    "old.ts::legacy",
+                    ChangeType::Deleted,
+                    Some("fn legacy() {\n  old_logic();\n}\n"),
+                    None,
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 0,
+                deleted_count: 1,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            mode: StepMode::Cumulative,
+            base_endpoint_id: Some("commit:aaaaaaa".to_string()),
+            comparison: StepComparison {
+                from_endpoint_id: "commit:aaaaaaa".to_string(),
+                to_endpoint_id: "working".to_string(),
+            },
+        };
+
+        app.apply_commit_step_response(loaded_response(snapshot));
+        assert!(app.is_row_reviewed(0));
+    }
+
+    #[test]
+    fn fallback_identity_ordinals_keep_duplicate_entities_distinct() {
+        let mut app = AppState::from_diff_result(
+            &DiffResult {
+                changes: vec![
+                    change_with_identity(
+                        "dup.ts",
+                        "dup",
+                        "",
+                        ChangeType::Modified,
+                        Some("fn dup() {\n  one();\n}\n"),
+                        Some("fn dup() {\n  one_changed();\n}\n"),
+                    ),
+                    change_with_identity(
+                        "dup.ts",
+                        "dup",
+                        "",
+                        ChangeType::Modified,
+                        Some("fn dup() {\n  two();\n}\n"),
+                        Some("fn dup() {\n  two_changed();\n}\n"),
+                    ),
+                ],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 2,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            DiffView::Unified,
+        );
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.is_row_reviewed(0));
+        assert!(!app.is_row_reviewed(1));
     }
 }

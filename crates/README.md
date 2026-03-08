@@ -42,6 +42,8 @@ sem impact validateToken --file-exts .py
 `sem diff --tui`:
 
 - `↑/↓` or `j/k`: selection / detail scrolling
+- `Space`: toggle reviewed state on selected/opened entity
+- `r`: cycle review filter (`all` -> `unreviewed` -> `reviewed`)
 - `Enter` / `Esc`: open and close entity detail
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
@@ -58,6 +60,7 @@ Startup defaults:
 - implicit/latest and `--commit` => `pairwise`
 - `--step-mode pairwise|cumulative` overrides startup only (`m` still toggles in-session)
 Pseudo-endpoints (`INDEX`, `WORKING`) are also supported in `--from/--to` outside TUI.
+Review state is persisted per-repo in `.sem/tui-review-state.json` (local metadata; `.sem/` is gitignored by default).
 
 ## Languages
 
