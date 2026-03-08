@@ -247,6 +247,34 @@ Example template:
 - Notes:
   - H1 deliverables closed: diff command phase refactor, `--tui`/`--diff-view` contracts, and TUI list-loop skeleton with deterministic stdin/two-file handling.
 
+### H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `1c7348a`
+- Acceptance evidence:
+  - `npm run lint` => `FAIL` (pre-existing TypeScript workspace/type dependency errors unrelated to Rust H2 scope)
+  - `npm test` => `FAIL` (`vitest` missing in current environment; unchanged by H2 scope)
+  - `cargo test -p sem-cli` => `PASS` (22 passed, 0 failed), including H2-focused coverage:
+    - detail-mode transitions (`Enter`/`Esc`)
+    - side-by-side width fallback behavior
+    - hunk navigation boundaries (`n/p`)
+    - paging/jump/help/tab key contracts (`PageUp/PageDown`, `g/G`, `?`, `Tab`)
+    - multi-hunk diff rendering and one-sided added/deleted rendering
+    - constrained-width render test with fallback path
+  - `cargo test -p sem-core` => `PASS` (35 passed, 0 failed) regression check
+  - `cargo fmt --all` => `PASS` (after restoring unintended out-of-scope workspace formatting changes)
+- Review run IDs + triage outcomes:
+  - `r_20260308064732786_bf0b0c9b` (generic-gemini):
+    - `accept`: fix multi-hunk absolute line-number drift in detail adapter, replace UTF-8-unsafe truncation, expand key/width coverage tests.
+    - `defer`: full render snapshot matrix (tracked for hardening in H3).
+    - `reject`: range-label display ambiguity (`[Lx-Ly -> ...]`) as non-blocking format preference within locked H2 scope.
+  - `r_20260308064828440_6e888de3` (generic-pi):
+    - `accept`: add tests for help/tab/jump/scroll key behavior, make side-by-side truncation UTF-8 safe, remove side-by-side wrap to preserve columns, saturate scroll cast, and clear formatting/dead-code warnings.
+    - `defer`: broader visual snapshot validation for renderer fidelity (H3 hardening scope).
+    - `reject`: none.
+- Go/No-Go: GO
+- Notes:
+  - During execution, `cargo fmt --all` initially touched unrelated files; those out-of-scope changes were restored before final H2 commit to preserve strict phase boundaries.
+
 ## 10. Execution Start Point
 Execution stream must start at `H0` only.
 
