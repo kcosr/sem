@@ -56,7 +56,7 @@ Deliverables:
 3. Render reviewed markers.
 4. Filtered list projection with file-header suppression and global no-match row.
 5. Navigation skips hidden rows and no-ops when none visible.
-6. Preserve step-mode footer token while adding review filter indicator.
+6. Preserve `m` step-mode footer cell while adding `r: <state>` filter cell.
 
 Acceptance:
 1. Toggle/filter behavior deterministic in both list and detail modes.
@@ -94,6 +94,7 @@ Gate:
 | persistence behavior | unit tests | missing/corrupt/version/repo mismatch + atomic write tests |
 | persistence compaction | unit tests | dedupe + max-record cap assertions |
 | filtered rendering | render tests | reviewed markers + file header suppression |
+| footer filter cell | render tests | `r: all|unreviewed|reviewed` coexists with `m: <mode>` |
 | no-match rendering | render tests | explicit empty-state row |
 | scale smoke | perf/manual | startup/load with `>=10k` records |
 | regression safety | full tests | `cargo test -p sem-cli && cargo test -p sem-core` |
@@ -119,6 +120,8 @@ Gate:
 - Mitigation: startup compaction + max-record cap.
 6. Risk: review UI changes regress unified-stepping footer semantics.
 - Mitigation: explicit footer composition contract + render regression tests.
+7. Risk: footer-cell contract drift across topics.
+- Mitigation: enforce `diff-tui-footer-cell-layout` addendum as shared source of truth.
 
 ## 7. Deferred Items
 1. Hunk-level review state.
@@ -210,7 +213,7 @@ Gate:
 - Commit hash(es): pending
 - Acceptance evidence:
   - cross-checked this spec set against post-H3 unified-stepping contracts (`pairwise`/`cumulative`, commit/index/working endpoints, and footer mode indicator requirements).
-  - amended design/plan/schema to preserve stepping semantics and define comparator-target hash source across endpoint kinds.
+  - amended design/plan/schema to preserve stepping semantics, define comparator-target hash source across endpoint kinds, and lock footer filter cell format (`r: <state>`) under shared footer-cell addendum.
 - Review run IDs + triage outcomes:
   - N/A (alignment-only amendment; no contract-scope expansion beyond compatibility clarifications)
 - Go/No-Go: GO
@@ -218,6 +221,8 @@ Gate:
   - changes are compatibility clarifications and do not alter review-state feature scope or persistence schema version.
 
 ## 10. Execution Handoff Contract
+0. Prerequisite:
+   - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline with `m` cell and cell-order contract).
 1. Required read order:
    1) `docs/implementation/diff-tui-entity-review-state/schema-proposal.md`
    2) `docs/implementation/diff-tui-entity-review-state/design.md`

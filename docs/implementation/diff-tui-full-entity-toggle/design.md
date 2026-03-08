@@ -15,7 +15,7 @@ For this topic, "entity" means the selected semantic entity row (`function`, `cl
 1. Add a runtime detail-context mode: `hunk` and `entity`.
 2. Add `e` keyboard toggle (lowercase) to switch context mode.
 3. Keep `n/p` hunk navigation working in both modes.
-4. Render a stable footer cell `e: <mode>` in list and detail views.
+4. Render a stable footer cell `e: <mode>` in list and detail views within shared footer cell layout.
 5. Keep default startup behavior as `hunk` mode.
 
 ## 4. Non-Goals
@@ -27,8 +27,9 @@ For this topic, "entity" means the selected semantic entity row (`function`, `cl
 ## 5. Current Baseline
 1. Detail diff uses grouped hunks with fixed context radius and does not expose full-entity view.
 2. `n/p` jump between grouped hunks.
-3. Footer already shows controls and step mode but not entity-context mode.
-4. List/detail views are stable and keyboard-driven.
+3. Footer cell baseline provides `m: <mode>` and reserved ordering for `m`, `r`, `e`.
+4. Entity-context cell `e` is not yet implemented.
+5. List/detail views are stable and keyboard-driven.
 
 ## 6. Key Decisions
 1. Introduce `EntityContextMode` enum with tokens: `hunk`, `entity`.
@@ -37,28 +38,29 @@ For this topic, "entity" means the selected semantic entity row (`function`, `cl
 4. Footer includes explicit mode cell rendered as lowercase value token only with key prefix:
    - `e: hunk`
    - `e: entity`
-5. Mode cell is present in both list and detail views.
-6. Hunk mode keeps current grouped rendering behavior.
-7. Entity mode renders full entity diff line stream (all lines in scope), not grouped snippets.
-8. Entity mode computes hunk anchors from changed regions in that full stream; a changed region is a contiguous run of non-equal diff operations.
-9. Anchors are ordered and deduplicated per active view renderer.
-10. Example anchor semantics:
+5. `e` cell must coexist with `m` cell and optional `r` cell using shared order `m`, `r`, `e`.
+6. Mode cell is present in both list and detail views.
+7. Hunk mode keeps current grouped rendering behavior.
+8. Entity mode renders full entity diff line stream (all lines in scope), not grouped snippets.
+9. Entity mode computes hunk anchors from changed regions in that full stream; a changed region is a contiguous run of non-equal diff operations.
+10. Anchors are ordered and deduplicated per active view renderer.
+11. Example anchor semantics:
    - change runs at logical lines 12-14 and 30 produce anchor list `[12, 30]` (first line index per changed region).
-11. On `e` toggle while in detail view:
+12. On `e` toggle while in detail view:
    - `detail_hunk_index` resets to `0`
    - `detail_scroll` resets to `0`
-12. Render pipeline computes both mode artifacts from a single diff pass per detail refresh and keeps them in memory for fast toggling.
-13. Help overlay line text is locked as:
+13. Render pipeline computes both mode artifacts from a single diff pass per detail refresh and keeps them in memory for fast toggling.
+14. Help overlay line text is locked as:
    - `e toggle hunk/entity context`
-14. `n/p` uses active mode anchors:
+15. `n/p` uses active mode anchors:
    - hunk mode: grouped hunk anchors
    - entity mode: changed-region anchors in full stream
-15. Anchor behavior is defined for all four combinations:
+16. Anchor behavior is defined for all four combinations:
    - hunk + unified
    - hunk + side-by-side
    - entity + unified
    - entity + side-by-side
-16. No top-of-screen status banner is added for this mode.
+17. No top-of-screen status banner is added for this mode.
 
 ## 7. Contract / Interface Semantics
 This is a CLI/TUI runtime contract (not HTTP).
@@ -72,7 +74,8 @@ This is a CLI/TUI runtime contract (not HTTP).
 ### 7.2 Footer Contract
 1. Footer includes a dedicated cell `e: <mode>` where mode is lowercase token.
 2. Cell is always shown in list and detail views.
-3. Footer layout remains single-line and non-modal.
+3. Footer cell order follows shared contract: `m`, `r`, `e`.
+4. Footer layout remains single-line and non-modal.
 
 ### 7.3 Detail Rendering Contract
 1. `hunk` mode behavior remains equivalent to existing grouped-hunk rendering.
@@ -94,7 +97,7 @@ This is a CLI/TUI runtime contract (not HTTP).
    - emit mode- and view-specific hunk anchors with deterministic ordering
    - define changed-region anchors as contiguous non-equal diff-op runs
 3. `tui/render.rs`
-   - footer format update with dedicated `e: <mode>` cell
+   - footer format update with dedicated `e: <mode>` cell in shared footer-cell rail
    - help overlay includes `e toggle hunk/entity context`
 4. tests
    - app-state toggle tests (list/detail)
@@ -111,6 +114,7 @@ This is a CLI/TUI runtime contract (not HTTP).
 1. Behavior is additive and TUI-only.
 2. Default mode preserves current user-visible behavior (`hunk`).
 3. Existing non-TUI outputs and JSON contracts are unchanged.
+4. Footer behavior aligns with `docs/implementation/diff-tui-footer-cell-layout/` addendum.
 
 ## 11. Test Strategy
 1. App-state tests for `e` in list/detail and startup default.
@@ -128,7 +132,7 @@ This is a CLI/TUI runtime contract (not HTTP).
 
 ## 12. Acceptance Criteria
 1. Operator can press `e` to switch between `hunk` and `entity` mode.
-2. Footer displays `e: hunk` or `e: entity` in list and detail.
+2. Footer displays `e: hunk` or `e: entity` in list and detail without regressing `m` or optional `r` cells.
 3. Entity mode shows complete entity context while preserving diff highlighting.
 4. `n/p` hunk stepping works in both modes without crashes.
 5. Startup default remains `hunk`.

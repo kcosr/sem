@@ -69,8 +69,10 @@ Deliverables:
    - explicit range => cumulative
    - implicit/latest and `--commit` => pairwise
 2. Add `--step-mode` explicit override.
-3. Update user docs and changelog.
-4. Hardening tests around live endpoint updates.
+3. Adopt footer cell contract from `diff-tui-footer-cell-layout`:
+   - mode token rendered as `m: pairwise|cumulative`.
+4. Update user docs and changelog.
+5. Hardening tests around live endpoint updates.
 
 Acceptance:
 1. Defaults behave as locked.
@@ -89,7 +91,7 @@ Gate:
 | pairwise orientation | unit tests | cursor endpoint selection assertions |
 | cumulative anchor behavior | unit tests | base selection/re-anchor assertions |
 | base endpoint invariants | unit tests | `baseEndpointId` null/ignored semantics assertions by mode |
-| mode toggle behavior | app/render tests | `m` toggle state + comparator header |
+| mode toggle behavior | app/render tests | `m` toggle state + comparator header + `m: <mode>` footer cell |
 | startup defaults | CLI tests | explicit range vs implicit vs commit invocation |
 | initial startup contract | unit/integration | initial mode/cursor/comparator assertions before first step |
 | single-endpoint edge | unit/integration | one-endpoint path semantics |

@@ -4,7 +4,7 @@
 Locked
 
 ## 1. Scope
-Deliver a TUI entity-context toggle (`hunk` vs `entity`) with keyboard control (`e`), deterministic hunk navigation in both modes, and footer mode-cell UX (`e: <mode>`) in list/detail views.
+Deliver a TUI entity-context toggle (`hunk` vs `entity`) with keyboard control (`e`), deterministic hunk navigation in both modes, and shared-footer-cell UX where `e: <mode>` coexists with `m` and optional `r` cells.
 
 ## 2. Global Rules
 1. Execute phases in strict order: `H0 -> H1 -> H2 -> H3`.
@@ -21,7 +21,7 @@ Deliver a TUI entity-context toggle (`hunk` vs `entity`) with keyboard control (
 Deliverables:
 1. Lock mode model (`hunk`, `entity`) and startup default.
 2. Lock keyboard semantics for `e` in list/detail.
-3. Lock footer cell contract (`e: <mode>`).
+3. Lock footer cell contract (`e: <mode>`) with shared ordering/coexistence (`m`, `r`, `e`).
 4. Lock changed-region definition for entity anchors.
 5. Lock toggle-reset semantics in detail (`detail_hunk_index=0`, `detail_scroll=0`).
 6. Lock 2x2 anchor behavior matrix: `(hunk|entity) x (unified|side-by-side)`.
@@ -68,7 +68,7 @@ Gate:
 
 ### H3: Footer UX + Docs + Hardening
 Deliverables:
-1. Rework footer to include dedicated `e: <mode>` cell in list/detail.
+1. Rework footer to include dedicated `e: <mode>` cell in list/detail within shared footer rail.
 2. Update help overlay text with exact line: `e toggle hunk/entity context`.
 3. Add/refresh docs and changelog for new toggle.
 4. Add hardening tests for identical-content entity mode and non-zero index toggle behavior.
@@ -95,7 +95,7 @@ Gate:
 | anchor dedupe/order | renderer test | deterministic anchor vector assertions |
 | mode/view matrix | app/detail tests | `(hunk|entity) x (unified|side-by-side)` traversal |
 | identical-content entity mode | renderer/app test | unchanged lines + empty anchors + `n/p` boundary no-op |
-| footer cell | render test | `e: hunk` / `e: entity` appears list+detail |
+| footer cell | render test | `e: hunk` / `e: entity` appears list+detail and coexists with `m` + optional `r` |
 | help text | render/help test | `e toggle hunk/entity context` visible |
 | regression safety | full tests | `cargo test -p sem-cli && cargo test -p sem-core` |
 
@@ -113,7 +113,7 @@ Gate:
 2. Risk: anchor mismatches between modes/views cause confusing jumps.
 - Mitigation: explicit mode+view anchor contract and matrix tests.
 3. Risk: footer overcrowding degrades readability.
-- Mitigation: fixed concise mode cell format `e: <mode>`.
+- Mitigation: fixed concise mode cell format and shared cell ordering from footer-cell addendum.
 4. Risk: render-path divergence creates regressions.
 - Mitigation: parity tests for hunk mode and full regression suite.
 5. Risk: very large entity payloads can increase render latency.
@@ -203,6 +203,8 @@ Gate:
   - review completion confirmed from live session stream terminal events (`result.completed`).
 
 ## 10. Execution Handoff Contract
+0. Prerequisite:
+   - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline and ordering contract).
 1. Required read order:
    1) `docs/implementation/diff-tui-full-entity-toggle/schema-proposal.md`
    2) `docs/implementation/diff-tui-full-entity-toggle/design.md`

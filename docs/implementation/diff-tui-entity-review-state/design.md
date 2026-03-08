@@ -81,8 +81,9 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
    - `targetContentHash` uses active comparator target endpoint content (`comparison.toEndpointId`)
    - valid target endpoint kinds include commit endpoint IDs, `index`, and `working`
 18. Footer composition lock:
-   - preserve existing step-mode indicator token
-   - append review filter indicator without removing step-mode token
+   - preserve `m: <pairwise|cumulative>` cell
+   - add review filter cell as `r: <all|unreviewed|reviewed>`
+   - do not remove or reorder reserved `e` position
 
 ## 7. Contract / Interface Semantics
 This is a CLI/TUI contract (not HTTP).
@@ -99,6 +100,7 @@ This is a CLI/TUI contract (not HTTP).
 2. `unreviewed`: show only entities without matching reviewed record.
 3. `reviewed`: show only entities with matching reviewed record.
 4. Empty filtered result produces explicit no-match state; does not auto-reset filter.
+5. Footer filter state is rendered as `r: <state>`.
 
 ### 7.3 Persistence Contract
 1. File path: `.sem/tui-review-state.json`.
@@ -112,7 +114,7 @@ This is a CLI/TUI contract (not HTTP).
    - add toggle/filter actions and visible-row projection
 2. `tui/render.rs`
    - add reviewed marker in rows
-   - add filter status in footer while preserving existing step-mode token
+   - add review filter footer cell `r: <state>` while preserving `m` cell
    - render filtered-empty state
 3. `commands/diff.rs` / TUI controller
    - compute target content hash for focused row from current comparator target endpoint content
@@ -133,6 +135,7 @@ This is a CLI/TUI contract (not HTTP).
 4. Future schema versions:
    - unknown version => ignore file in v1
    - v2+ must provide explicit one-way migration or reset policy in its own design lock.
+5. Footer behavior aligns with `docs/implementation/diff-tui-footer-cell-layout/` addendum.
 
 ## 11. Test Strategy
 1. App-state tests:
@@ -166,6 +169,7 @@ This is a CLI/TUI contract (not HTTP).
 3. Reviewed records persist across sessions.
 4. Reviewed carryover works only when entity identity and target content hash match.
 5. Empty filtered views are stable and non-crashing.
+6. Footer shows `r: all|unreviewed|reviewed` alongside existing mode cell contract.
 
 ## 13. Constraints and Explicit User Preferences
 1. Entity-level only in v1; hunk-level deferred.

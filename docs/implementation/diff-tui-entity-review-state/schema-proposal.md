@@ -31,7 +31,15 @@ Define an internal persistence and runtime contract for entity-level reviewed st
 }
 ```
 
-### 2.3 Persistence File Example
+### 2.3 Footer Cells (internal)
+```json
+{
+  "modeCell": "m: cumulative",
+  "reviewCell": "r: unreviewed"
+}
+```
+
+### 2.4 Persistence File Example
 ```json
 {
   "version": 1,
@@ -112,6 +120,7 @@ Define an internal persistence and runtime contract for entity-level reviewed st
    - `index`
    - `working`
 8. Review toggle/filter actions never mutate step cursor, step mode, or comparator endpoint IDs.
+9. Review filter footer cell format is exactly `r: <all|unreviewed|reviewed>`.
 
 ## 5. Deterministic Reject / Status Lock
 1. Corrupt persistence file => ignore file, keep session usable, show non-fatal status.
@@ -129,4 +138,5 @@ Define an internal persistence and runtime contract for entity-level reviewed st
 4. This schema is internal; no external JSON API contract changes.
 5. Hunk-level review state and annotations are out of scope for this topic.
 6. Cursor/range resume restoration is deferred.
-7. Footer rendering with review filter indicator must preserve existing step-mode indicator token from unified stepping.
+7. Footer rendering with review filter indicator must preserve `m: <mode>` step-mode cell from unified stepping.
+8. Footer cell ordering follows `docs/implementation/diff-tui-footer-cell-layout/` (`m`, `r`, `e`).

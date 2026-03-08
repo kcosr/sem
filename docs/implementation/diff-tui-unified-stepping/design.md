@@ -87,7 +87,7 @@ This is CLI/TUI contract design (not HTTP).
 3. `m` toggles `pairwise` <-> `cumulative`.
 
 ### 7.3 Mode Indicator Contract
-1. Footer must include explicit mode token: `mode: pairwise` or `mode: cumulative`.
+1. Footer must include explicit mode cell token: `m: pairwise` or `m: cumulative`.
 2. Header comparator line always reflects effective comparison endpoints for current mode/cursor.
 
 ### 7.4 Endpoint Resolution
@@ -117,6 +117,7 @@ This is CLI/TUI contract design (not HTTP).
 2. Preserve existing pairwise commit intuition.
 3. Existing commit-only `--from/--to` behavior remains unchanged when pseudo-endpoints are not used.
 4. Introduce new mode behavior incrementally behind explicit phase gates.
+5. Align footer presentation with `docs/implementation/diff-tui-footer-cell-layout/` addendum contract.
 
 ## 11. Test Strategy
 1. Endpoint path planning tests (`commit`, `range`, `INDEX`, `WORKING`).

@@ -36,6 +36,7 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
 ### 2.3 Footer Cell Model (internal)
 ```json
 {
+  "precedingCells": ["m: cumulative", "r: unreviewed"],
   "key": "e",
   "value": "entity",
   "rendered": "e: entity"
@@ -100,6 +101,7 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
 6. `changedRegions` means contiguous non-equal diff-op runs; each anchor is the first rendered line index of that run.
 7. Footer cell render format is exactly lowercase `e: <token>`.
 8. Startup default is `hunk`.
+9. Footer cell ordering must follow shared contract `m`, `r`, `e`; this topic owns only `e`.
 
 ## 5. Deterministic Reject / Status Lock
 1. Unknown mode token must be rejected in internal constructors/tests; runtime falls back to `hunk` only via guarded initialization, not silent parse from user input.
@@ -114,3 +116,4 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
 2. Existing `--format json` output remains unchanged.
 3. `rendered` in footer cell is a documentation convenience and may be derived from `key` + `value`.
 4. File-aggregate and persisted mode preference remain deferred.
+5. Footer layout semantics align with `docs/implementation/diff-tui-footer-cell-layout/`.
