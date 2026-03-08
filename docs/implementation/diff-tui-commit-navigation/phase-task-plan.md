@@ -221,7 +221,29 @@ Template:
   - both review runs completed via session stream terminal event `result.completed`.
   - global `npm` gate failures are pre-existing environment/workspace issues and were logged for traceability.
 
-### 9.4 Authoring-Stage Evidence (Spec Plan)
+### 9.4 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `f4f1223`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` => pass (`39 passed, 0 failed`) including new commit-nav tests:
+    - `process_commit_step_request_transitions_cursor_on_lineage`
+    - `process_commit_step_request_returns_unsupported_for_non_commit_mode`
+    - `apply_loaded_commit_snapshot_resets_selection_and_cursor_state`
+    - `unsupported_mode_response_sets_status_hint`
+  - `cargo test -p sem-core` => pass (`41 passed, 0 failed`).
+  - `cargo fmt -p sem-cli -p sem-core` => pass (format fixes applied from review).
+  - `npm run lint` => `NO-GO` for global TS workspace baseline (missing module/type dependencies in current environment; unrelated to H1 Rust scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to H1 Rust scope).
+  - manual: verified H1 deliverables landed (runtime commit loader service, commit cursor/session model, worker-channel coordinator in TUI loop, unsupported-mode path handling).
+- Review run IDs + triage outcomes:
+  - `r_20260308163232251_915ace18` (`generic-gemini`): `defer` keybinding/header/render findings to H2 (out-of-phase for H1); `defer` coordinator concurrency tests to H2/H3 matrix; `accept` no H1 blocking defects.
+  - `r_20260308163420226_80700429` (`generic-pi`): `accept` rustfmt findings (applied); `defer` dead-code warning cleanup to H2 (methods become live with render/key wiring); `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - both review runs completed via session stream terminal event `result.completed`.
+  - H1 intentionally excludes `[`/`]` user key wiring and header/status rendering per phase boundaries; scheduled for H2.
+
+### 9.5 Authoring-Stage Evidence (Spec Plan)
 - Completion date: 2026-03-08
 - Commit hash(es): N/A (planning stream)
 - Acceptance evidence:
