@@ -244,6 +244,30 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.6 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `6bb3716`
+- Acceptance evidence:
+  - manual: verified runtime mode toggle (`m`), mode-aware comparator selection, and comparator header/footer rendering contract in `crates/sem-cli/src/commands/diff.rs`, `crates/sem-cli/src/tui/app.rs`, `crates/sem-cli/src/tui/mod.rs`, and `crates/sem-cli/src/tui/render.rs`.
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to Rust H2 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H2 scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (57 passed) including H2 mode/header tests:
+    - `resolve_step_comparison_uses_previous_current_for_pairwise`
+    - `resolve_step_comparison_uses_base_cursor_for_cumulative`
+    - `m_key_toggles_mode_and_queues_refresh`
+    - `comparison_line_formats_for_pairwise_and_cumulative_modes`
+    - `draw_list_mode_with_cumulative_comparator_header_succeeds`
+    - `process_step_refresh_request_loads_snapshot_for_current_cursor`
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+  - `cargo fmt -p sem-cli` => PASS.
+- Review run IDs + triage outcomes:
+  - `r_20260308190101890_db8787c1` (`generic-gemini`): `accept` H2 implementation completeness and mode/header behavior alignment; `defer` long-tail sync/perf hardening concerns to H3; `reject` none.
+  - `r_20260308190307639_2d03dd66` (`generic-pi`): `accept` add explicit tests for cumulative null-base fallback and refresh-request happy path (applied); `defer` startup defaults/`--step-mode` wiring, dead-code cleanup, and refresh/request dedupe to H3; `reject` disabling mode token when stepping is unavailable (conflicts with locked mode-indicator contract).
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+  - untracked `docs/implementation/diff-tui-full-entity-toggle/` content was left untouched per operator instruction to ignore another in-flight agent stream.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-unified-stepping/schema-proposal.md`
