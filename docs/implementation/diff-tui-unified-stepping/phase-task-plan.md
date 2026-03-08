@@ -268,6 +268,36 @@ Gate:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
   - untracked `docs/implementation/diff-tui-full-entity-toggle/` content was left untouched per operator instruction to ignore another in-flight agent stream.
 
+### 9.7 H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `d8a749c`
+- Acceptance evidence:
+  - manual: verified H3 startup defaults/bootstrap wiring and docs/changelog updates in:
+    - `crates/sem-cli/src/main.rs` (`--step-mode` CLI surface + validation)
+    - `crates/sem-cli/src/commands/diff.rs` (startup default resolver, pseudo-endpoint range bootstrap, startup refresh integration, hardening tests)
+    - `crates/sem-cli/src/tui/mod.rs` (bootstrap-driven initial TUI state)
+    - `README.md`, `crates/README.md`, `CHANGELOG.md`
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to Rust H3 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H3 scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (69 passed), including H3 coverage additions:
+    - `build_tui_navigation_bootstrap_defaults_implicit_latest_to_pairwise`
+    - `build_tui_navigation_bootstrap_defaults_staged_to_pairwise`
+    - `build_tui_navigation_bootstrap_commit_mode_honors_cumulative_override`
+    - `startup_refresh_uses_bootstrap_cursor_mode_and_base`
+    - `diff_command_json_supports_pseudo_endpoint_range_without_tui`
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+  - `cargo fmt -p sem-cli` => PASS.
+- Review run IDs + triage outcomes:
+  - `r_20260308191938158_f408ece7` (`generic-gemini`): `accept` implementation completeness and contract alignment across defaults/override/pseudo-endpoints/docs/tests; `defer` none; `reject` none.
+  - `r_20260308192115571_54ca1303` (`generic-pi`):
+    - `accept` missing bootstrap coverage for implicit/latest and staged startup paths, startup refresh contract test, pseudo-endpoint JSON regression, and non-TUI pseudo-endpoint doc visibility (all applied in `d8a749c`).
+    - `defer` startup double-load/perf optimization, cumulative-startup UX ambiguity for non-range inputs, first-parent path error-message ergonomics, and `StepCursor.sha` naming cleanup.
+    - `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+  - finalization-doc paths referenced by execution-skill defaults (`docs/reference/architecture.md`, `docs/implementation/implementation-plan.md`) are not present in this repository; no updates were applicable.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-unified-stepping/schema-proposal.md`
