@@ -46,8 +46,8 @@ pub fn run_tui(
                 cwd: String::new(),
                 file_exts: vec![],
                 source_mode: TuiSourceMode::Unsupported,
-                lineage: vec![],
-                lineage_index: HashMap::new(),
+                endpoints: vec![],
+                endpoint_index: HashMap::new(),
             },
             TuiSourceMode::Unsupported,
             None,
@@ -79,10 +79,14 @@ pub fn run_tui(
             let request = CommitStepRequest {
                 request_id: reload_coordinator.next_request_id(),
                 action,
-                current_sha: app_state
+                current_endpoint_id: app_state
                     .commit_cursor()
-                    .map(|cursor| cursor.sha.clone())
+                    .map(|cursor| cursor.endpoint_id.clone())
                     .unwrap_or_default(),
+                current_index: app_state
+                    .commit_cursor()
+                    .map(|cursor| cursor.index)
+                    .unwrap_or(0),
                 source_mode: app_state.commit_source_mode(),
             };
             reload_coordinator.queue_request(request);
@@ -206,22 +210,24 @@ mod tests {
             cwd: String::new(),
             file_exts: vec![],
             source_mode: TuiSourceMode::Unsupported,
-            lineage: vec![],
-            lineage_index: HashMap::new(),
+            endpoints: vec![],
+            endpoint_index: HashMap::new(),
         });
 
         let first_request_id = coordinator.next_request_id();
         coordinator.queue_request(CommitStepRequest {
             request_id: first_request_id,
             action: CommitStepAction::Older,
-            current_sha: String::new(),
+            current_endpoint_id: String::new(),
+            current_index: 0,
             source_mode: TuiSourceMode::Unsupported,
         });
         let second_request_id = coordinator.next_request_id();
         coordinator.queue_request(CommitStepRequest {
             request_id: second_request_id,
             action: CommitStepAction::Newer,
-            current_sha: String::new(),
+            current_endpoint_id: String::new(),
+            current_index: 0,
             source_mode: TuiSourceMode::Unsupported,
         });
 
@@ -239,8 +245,8 @@ mod tests {
             cwd: String::new(),
             file_exts: vec![],
             source_mode: TuiSourceMode::Unsupported,
-            lineage: vec![],
-            lineage_index: HashMap::new(),
+            endpoints: vec![],
+            endpoint_index: HashMap::new(),
         });
 
         let sequence = [
@@ -255,7 +261,8 @@ mod tests {
             coordinator.queue_request(CommitStepRequest {
                 request_id,
                 action,
-                current_sha: String::new(),
+                current_endpoint_id: String::new(),
+                current_index: 0,
                 source_mode: TuiSourceMode::Unsupported,
             });
         }

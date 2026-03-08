@@ -5,6 +5,7 @@ use std::time::Instant;
 use std::{collections::HashMap, fmt};
 
 use clap::ValueEnum;
+use git2::{Delta, DiffOptions as GitDiffOptions, Repository, Tree};
 use sem_core::git::bridge::GitBridge;
 use sem_core::git::types::{DiffScope, FileChange, FileStatus};
 use sem_core::parser::differ::{compute_semantic_diff, DiffResult};
@@ -43,41 +44,58 @@ pub enum DiffView {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuiSourceMode {
+    Unified,
     Commit,
     Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommitStepAction {
+pub enum StepAction {
     Older,
     Newer,
 }
 
-impl fmt::Display for CommitStepAction {
+impl fmt::Display for StepAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CommitStepAction::Older => write!(f, "stepOlder"),
-            CommitStepAction::Newer => write!(f, "stepNewer"),
+            StepAction::Older => write!(f, "stepOlder"),
+            StepAction::Newer => write!(f, "stepNewer"),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitCursor {
-    pub rev_label: Option<String>,
+pub struct StepCursor {
+    pub endpoint_id: String,
+    pub index: usize,
     pub sha: String,
+    pub rev_label: Option<String>,
     pub subject: String,
     pub has_older: bool,
     pub has_newer: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepEndpointKind {
+    Commit { sha: String },
+    Index,
+    Working,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepEndpoint {
+    pub endpoint_id: String,
+    pub display_ref: Option<String>,
+    pub kind: StepEndpointKind,
+}
+
 #[derive(Clone, Debug)]
-pub struct CommitNavigationContext {
+pub struct StepNavigationContext {
     pub cwd: String,
     pub file_exts: Vec<String>,
     pub source_mode: TuiSourceMode,
-    pub(crate) lineage: Vec<String>,
-    pub(crate) lineage_index: HashMap<String, usize>,
+    pub(crate) endpoints: Vec<StepEndpoint>,
+    pub(crate) endpoint_index: HashMap<String, usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,21 +105,22 @@ pub struct TuiRangeContext {
 }
 
 #[derive(Clone, Debug)]
-pub struct CommitSnapshot {
-    pub cursor: CommitCursor,
+pub struct StepSnapshot {
+    pub cursor: StepCursor,
     pub result: DiffResult,
 }
 
 #[derive(Clone, Debug)]
-pub struct CommitStepRequest {
+pub struct StepRequest {
     pub request_id: u64,
-    pub action: CommitStepAction,
-    pub current_sha: String,
+    pub action: StepAction,
+    pub current_endpoint_id: String,
+    pub current_index: usize,
     pub source_mode: TuiSourceMode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommitLoadStatus {
+pub enum StepLoadStatus {
     Loaded,
     LoadFailed,
     UnsupportedMode,
@@ -110,13 +129,21 @@ pub enum CommitLoadStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct CommitStepResponse {
+pub struct StepResponse {
     pub applied_request_id: u64,
-    pub status: CommitLoadStatus,
-    pub snapshot: Option<CommitSnapshot>,
+    pub status: StepLoadStatus,
+    pub snapshot: Option<StepSnapshot>,
     pub error: Option<String>,
     pub retain_previous_snapshot: bool,
 }
+
+pub type CommitStepAction = StepAction;
+pub type CommitCursor = StepCursor;
+pub type CommitNavigationContext = StepNavigationContext;
+pub type CommitSnapshot = StepSnapshot;
+pub type CommitStepRequest = StepRequest;
+pub type CommitLoadStatus = StepLoadStatus;
+pub type CommitStepResponse = StepResponse;
 
 struct InputPhase {
     file_changes: Vec<FileChange>,
@@ -347,7 +374,7 @@ pub fn is_commit_navigation_mode(opts: &DiffOptions) -> bool {
 
 pub fn build_commit_navigation_context(
     opts: &DiffOptions,
-) -> Result<Option<(CommitNavigationContext, CommitCursor)>, String> {
+) -> Result<Option<(StepNavigationContext, StepCursor)>, String> {
     if !is_commit_navigation_mode(opts) {
         return Ok(None);
     }
@@ -365,23 +392,38 @@ pub fn build_commit_navigation_context(
     let lineage = git
         .get_first_parent_lineage(&session_head_sha)
         .map_err(|error| format!("building first-parent lineage: {error}"))?;
-    let lineage_index: HashMap<String, usize> = lineage
+    let rev_labels: HashMap<String, String> = lineage
         .iter()
         .enumerate()
-        .map(|(index, sha)| (sha.clone(), index))
+        .map(|(index, sha)| (sha.clone(), format!("HEAD~{index}")))
+        .collect();
+    let endpoints: Vec<StepEndpoint> = lineage
+        .iter()
+        .rev()
+        .map(|sha| StepEndpoint {
+            endpoint_id: commit_endpoint_id(sha),
+            display_ref: rev_labels.get(sha).cloned(),
+            kind: StepEndpointKind::Commit { sha: sha.clone() },
+        })
+        .collect();
+    let endpoint_index: HashMap<String, usize> = endpoints
+        .iter()
+        .enumerate()
+        .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
         .collect();
     let current_sha = git
         .resolve_commit_sha(commit_ref)
         .map_err(|error| format!("resolving commit {commit_ref}: {error}"))?;
+    let current_endpoint_id = commit_endpoint_id(&current_sha);
 
-    let context = CommitNavigationContext {
+    let context = StepNavigationContext {
         cwd: opts.cwd.clone(),
         file_exts: opts.file_exts.clone(),
         source_mode: TuiSourceMode::Commit,
-        lineage,
-        lineage_index,
+        endpoints,
+        endpoint_index,
     };
-    let cursor = build_commit_cursor(&git, &context, &current_sha)?;
+    let cursor = build_step_cursor(&git, &context, &current_endpoint_id)?;
     Ok(Some((context, cursor)))
 }
 
@@ -418,15 +460,18 @@ fn describe_ref_with_details(git: &GitBridge, refspec: &str) -> Result<String, S
     Ok(format!("{refspec}  {short_sha}  {subject}"))
 }
 
-pub fn process_commit_step_request(
-    context: &CommitNavigationContext,
-    request: &CommitStepRequest,
-) -> CommitStepResponse {
-    if context.source_mode != TuiSourceMode::Commit || request.source_mode != TuiSourceMode::Commit
-    {
-        return CommitStepResponse {
+pub fn process_step_request(
+    context: &StepNavigationContext,
+    request: &StepRequest,
+) -> StepResponse {
+    let context_supported = context.source_mode == TuiSourceMode::Unified
+        || context.source_mode == TuiSourceMode::Commit;
+    let request_supported = request.source_mode == TuiSourceMode::Unified
+        || request.source_mode == TuiSourceMode::Commit;
+    if !context_supported || !request_supported {
+        return StepResponse {
             applied_request_id: request.request_id,
-            status: CommitLoadStatus::UnsupportedMode,
+            status: StepLoadStatus::UnsupportedMode,
             snapshot: None,
             error: None,
             retain_previous_snapshot: true,
@@ -436,9 +481,9 @@ pub fn process_commit_step_request(
     let git = match GitBridge::open(Path::new(&context.cwd)) {
         Ok(git) => git,
         Err(error) => {
-            return CommitStepResponse {
+            return StepResponse {
                 applied_request_id: request.request_id,
-                status: CommitLoadStatus::LoadFailed,
+                status: StepLoadStatus::LoadFailed,
                 snapshot: None,
                 error: Some(error.to_string()),
                 retain_previous_snapshot: true,
@@ -446,22 +491,21 @@ pub fn process_commit_step_request(
         }
     };
 
-    let target_sha = match resolve_step_target(&git, context, &request.current_sha, request.action)
-    {
-        Ok(Some(target_sha)) => target_sha,
+    let target_endpoint_id = match resolve_step_target_endpoint_id(context, request) {
+        Ok(Some(target_endpoint_id)) => target_endpoint_id,
         Ok(None) => {
-            return CommitStepResponse {
+            return StepResponse {
                 applied_request_id: request.request_id,
-                status: CommitLoadStatus::BoundaryNoop,
+                status: StepLoadStatus::BoundaryNoop,
                 snapshot: None,
                 error: None,
                 retain_previous_snapshot: true,
             };
         }
         Err(error) => {
-            return CommitStepResponse {
+            return StepResponse {
                 applied_request_id: request.request_id,
-                status: CommitLoadStatus::LoadFailed,
+                status: StepLoadStatus::LoadFailed,
                 snapshot: None,
                 error: Some(error),
                 retain_previous_snapshot: true,
@@ -469,12 +513,38 @@ pub fn process_commit_step_request(
         }
     };
 
-    let result = match load_commit_diff_result(&context.cwd, &target_sha, &context.file_exts) {
+    let target_index = context
+        .endpoint_index
+        .get(&target_endpoint_id)
+        .copied()
+        .unwrap_or_default();
+    let from_endpoint = if target_index == 0 {
+        context
+            .endpoints
+            .get(target_index)
+            .expect("target endpoint index must be valid")
+    } else {
+        context
+            .endpoints
+            .get(target_index - 1)
+            .expect("pairwise source endpoint index must be valid")
+    };
+    let to_endpoint = context
+        .endpoints
+        .get(target_index)
+        .expect("target endpoint index must be valid");
+
+    let result = match load_endpoint_diff_result(
+        &context.cwd,
+        from_endpoint,
+        to_endpoint,
+        &context.file_exts,
+    ) {
         Ok(result) => result,
         Err(error) => {
-            return CommitStepResponse {
+            return StepResponse {
                 applied_request_id: request.request_id,
-                status: CommitLoadStatus::LoadFailed,
+                status: StepLoadStatus::LoadFailed,
                 snapshot: None,
                 error: Some(error),
                 retain_previous_snapshot: true,
@@ -482,17 +552,17 @@ pub fn process_commit_step_request(
         }
     };
 
-    match build_commit_cursor(&git, context, &target_sha) {
-        Ok(cursor) => CommitStepResponse {
+    match build_step_cursor(&git, context, &target_endpoint_id) {
+        Ok(cursor) => StepResponse {
             applied_request_id: request.request_id,
-            status: CommitLoadStatus::Loaded,
-            snapshot: Some(CommitSnapshot { cursor, result }),
+            status: StepLoadStatus::Loaded,
+            snapshot: Some(StepSnapshot { cursor, result }),
             error: None,
             retain_previous_snapshot: false,
         },
-        Err(error) => CommitStepResponse {
+        Err(error) => StepResponse {
             applied_request_id: request.request_id,
-            status: CommitLoadStatus::LoadFailed,
+            status: StepLoadStatus::LoadFailed,
             snapshot: None,
             error: Some(error),
             retain_previous_snapshot: true,
@@ -500,78 +570,410 @@ pub fn process_commit_step_request(
     }
 }
 
-fn resolve_step_target(
-    git: &GitBridge,
-    context: &CommitNavigationContext,
-    current_sha: &str,
-    action: CommitStepAction,
+pub fn process_commit_step_request(
+    context: &StepNavigationContext,
+    request: &StepRequest,
+) -> StepResponse {
+    process_step_request(context, request)
+}
+
+fn resolve_step_target_endpoint_id(
+    context: &StepNavigationContext,
+    request: &StepRequest,
 ) -> Result<Option<String>, String> {
-    let index = context.lineage_index.get(current_sha).copied();
-    match action {
-        CommitStepAction::Older => {
-            if let Some(index) = index {
-                if index + 1 < context.lineage.len() {
-                    return Ok(Some(context.lineage[index + 1].clone()));
-                }
-                return Ok(None);
+    let index = context
+        .endpoint_index
+        .get(&request.current_endpoint_id)
+        .copied()
+        .or_else(|| {
+            context
+                .endpoints
+                .get(request.current_index)
+                .map(|_| request.current_index)
+        })
+        .ok_or_else(|| {
+            format!(
+                "current endpoint {} not found in active path",
+                request.current_endpoint_id
+            )
+        })?;
+
+    if index != request.current_index {
+        return Err(format!(
+            "cursor index mismatch for endpoint {}: request={}, resolved={index}",
+            request.current_endpoint_id, request.current_index
+        ));
+    }
+
+    let max_index = context.endpoints.len().saturating_sub(1);
+
+    match request.action {
+        StepAction::Older => {
+            if index == 0 {
+                Ok(None)
+            } else {
+                Ok(context
+                    .endpoints
+                    .get(index - 1)
+                    .map(|endpoint| endpoint.endpoint_id.clone()))
             }
-            git.get_first_parent_sha(current_sha)
-                .map_err(|error| format!("resolving first parent for {current_sha}: {error}"))
         }
-        CommitStepAction::Newer => {
-            if let Some(index) = index {
-                if index > 0 {
-                    return Ok(Some(context.lineage[index - 1].clone()));
-                }
-                return Ok(None);
+        StepAction::Newer => {
+            if index >= max_index {
+                Ok(None)
+            } else {
+                Ok(context
+                    .endpoints
+                    .get(index + 1)
+                    .map(|endpoint| endpoint.endpoint_id.clone()))
             }
-            Ok(None)
         }
     }
 }
 
-fn build_commit_cursor(
+fn build_step_cursor(
     git: &GitBridge,
-    context: &CommitNavigationContext,
-    sha: &str,
-) -> Result<CommitCursor, String> {
-    let index = context.lineage_index.get(sha).copied();
-    let has_newer = index.is_some_and(|value| value > 0);
-    let has_older = if let Some(index) = index {
-        index + 1 < context.lineage.len()
-    } else {
-        git.get_first_parent_sha(sha)
-            .map_err(|error| format!("resolving first parent for {sha}: {error}"))?
-            .is_some()
+    context: &StepNavigationContext,
+    endpoint_id: &str,
+) -> Result<StepCursor, String> {
+    let index = context
+        .endpoint_index
+        .get(endpoint_id)
+        .copied()
+        .ok_or_else(|| format!("endpoint {endpoint_id} not found in active path"))?;
+    let endpoint = context
+        .endpoints
+        .get(index)
+        .ok_or_else(|| format!("endpoint index {index} out of bounds"))?;
+    let subject = match &endpoint.kind {
+        StepEndpointKind::Commit { sha } => git
+            .get_commit_subject(sha)
+            .map_err(|error| format!("resolving subject for {sha}: {error}"))?,
+        StepEndpointKind::Index => "INDEX".to_string(),
+        StepEndpointKind::Working => "WORKING".to_string(),
     };
-    let subject = git
-        .get_commit_subject(sha)
-        .map_err(|error| format!("resolving subject for {sha}: {error}"))?;
+    let has_older = index > 0;
+    let has_newer = index + 1 < context.endpoints.len();
 
-    Ok(CommitCursor {
-        rev_label: index.map(|value| format!("HEAD~{value}")),
-        sha: sha.to_string(),
+    let sha = match &endpoint.kind {
+        StepEndpointKind::Commit { sha } => sha.clone(),
+        StepEndpointKind::Index => "index".to_string(),
+        StepEndpointKind::Working => "working".to_string(),
+    };
+
+    Ok(StepCursor {
+        endpoint_id: endpoint.endpoint_id.clone(),
+        index,
+        sha,
+        rev_label: endpoint.display_ref.clone(),
         subject,
         has_older,
         has_newer,
     })
 }
 
-fn load_commit_diff_result(
+fn commit_endpoint_id(sha: &str) -> String {
+    format!("commit:{sha}")
+}
+
+fn endpoint_id_to_kind(endpoint_id: &str) -> Result<StepEndpointKind, String> {
+    if endpoint_id.eq_ignore_ascii_case("index") {
+        return Ok(StepEndpointKind::Index);
+    }
+    if endpoint_id.eq_ignore_ascii_case("working") {
+        return Ok(StepEndpointKind::Working);
+    }
+    let Some(sha) = endpoint_id.strip_prefix("commit:") else {
+        return Err(format!("unsupported endpoint id: {endpoint_id}"));
+    };
+    Ok(StepEndpointKind::Commit {
+        sha: sha.to_string(),
+    })
+}
+
+fn load_endpoint_diff_result(
     cwd: &str,
-    sha: &str,
+    from: &StepEndpoint,
+    to: &StepEndpoint,
     file_exts: &[String],
 ) -> Result<DiffResult, String> {
-    let git =
-        GitBridge::open(Path::new(cwd)).map_err(|_| "Not inside a Git repository.".to_string())?;
-    let scope = DiffScope::Commit {
-        sha: sha.to_string(),
-    };
-    let file_changes = git
-        .get_changed_files(&scope)
-        .map_err(|error| format!("loading changed files for commit {sha}: {error}"))?;
+    if from.endpoint_id == to.endpoint_id {
+        return Ok(compute_diff_result(&[]).result);
+    }
+
+    let file_changes = load_changed_files_between_endpoints(cwd, &from.kind, &to.kind)?;
     let filtered = filter_file_changes(file_changes, file_exts);
     Ok(compute_diff_result(&filtered).result)
+}
+
+fn load_changed_files_between_endpoints(
+    cwd: &str,
+    from: &StepEndpointKind,
+    to: &StepEndpointKind,
+) -> Result<Vec<FileChange>, String> {
+    let repo =
+        Repository::discover(cwd).map_err(|error| format!("opening git repository: {error}"))?;
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| "Not inside a Git repository.".to_string())?
+        .to_path_buf();
+    let from_snapshot = resolve_endpoint_snapshot(&repo, from)?;
+    let to_snapshot = resolve_endpoint_snapshot(&repo, to)?;
+    let entries = diff_entries_between_endpoints(&repo, from, to)?;
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let file_path = entry
+                .after_path
+                .clone()
+                .or(entry.before_path.clone())
+                .ok_or_else(|| "diff entry missing path".to_string())?;
+            let old_file_path = if entry.status == FileStatus::Renamed {
+                entry.before_path.clone()
+            } else {
+                None
+            };
+            let before_content = if entry.status == FileStatus::Added {
+                None
+            } else {
+                entry
+                    .before_path
+                    .as_deref()
+                    .and_then(|path| read_endpoint_content(&repo, &repo_root, &from_snapshot, path))
+            };
+            let after_content = if entry.status == FileStatus::Deleted {
+                None
+            } else {
+                entry
+                    .after_path
+                    .as_deref()
+                    .and_then(|path| read_endpoint_content(&repo, &repo_root, &to_snapshot, path))
+            };
+
+            Ok(FileChange {
+                file_path,
+                status: entry.status,
+                old_file_path,
+                before_content,
+                after_content,
+            })
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+struct DiffEntry {
+    status: FileStatus,
+    before_path: Option<String>,
+    after_path: Option<String>,
+}
+
+enum EndpointSnapshot<'repo> {
+    Commit(Tree<'repo>),
+    Index(git2::Index),
+    Working,
+}
+
+fn resolve_endpoint_snapshot<'repo>(
+    repo: &'repo Repository,
+    endpoint: &StepEndpointKind,
+) -> Result<EndpointSnapshot<'repo>, String> {
+    match endpoint {
+        StepEndpointKind::Commit { sha } => {
+            resolve_commit_tree(repo, sha).map(EndpointSnapshot::Commit)
+        }
+        StepEndpointKind::Index => repo
+            .index()
+            .map(EndpointSnapshot::Index)
+            .map_err(|error| format!("reading git index: {error}")),
+        StepEndpointKind::Working => Ok(EndpointSnapshot::Working),
+    }
+}
+
+fn resolve_commit_tree<'repo>(repo: &'repo Repository, sha: &str) -> Result<Tree<'repo>, String> {
+    let obj = repo
+        .revparse_single(sha)
+        .map_err(|error| format!("resolving commit {sha}: {error}"))?;
+    let commit = obj
+        .peel_to_commit()
+        .map_err(|error| format!("loading commit {sha}: {error}"))?;
+    commit
+        .tree()
+        .map_err(|error| format!("loading tree for {sha}: {error}"))
+}
+
+fn resolve_index_tree<'repo>(repo: &'repo Repository) -> Result<Tree<'repo>, String> {
+    let mut index = repo
+        .index()
+        .map_err(|error| format!("reading git index: {error}"))?;
+    let oid = index
+        .write_tree_to(repo)
+        .map_err(|error| format!("materializing index tree: {error}"))?;
+    repo.find_tree(oid)
+        .map_err(|error| format!("loading index tree object: {error}"))
+}
+
+fn diff_entries_between_endpoints(
+    repo: &Repository,
+    from: &StepEndpointKind,
+    to: &StepEndpointKind,
+) -> Result<Vec<DiffEntry>, String> {
+    match (from, to) {
+        (StepEndpointKind::Commit { sha: from_sha }, StepEndpointKind::Commit { sha: to_sha }) => {
+            let from_tree = resolve_commit_tree(repo, from_sha)?;
+            let to_tree = resolve_commit_tree(repo, to_sha)?;
+            let diff = repo
+                .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)
+                .map_err(|error| format!("building diff {from_sha}..{to_sha}: {error}"))?;
+            Ok(diff_entries_from_diff(&diff))
+        }
+        (StepEndpointKind::Commit { sha }, StepEndpointKind::Index) => {
+            let from_tree = resolve_commit_tree(repo, sha)?;
+            let index = repo
+                .index()
+                .map_err(|error| format!("reading git index: {error}"))?;
+            let diff = repo
+                .diff_tree_to_index(Some(&from_tree), Some(&index), None)
+                .map_err(|error| format!("building diff commit:{sha}..index: {error}"))?;
+            Ok(diff_entries_from_diff(&diff))
+        }
+        (StepEndpointKind::Commit { sha }, StepEndpointKind::Working) => {
+            let from_tree = resolve_commit_tree(repo, sha)?;
+            let mut opts = GitDiffOptions::new();
+            opts.include_untracked(true).recurse_untracked_dirs(true);
+            let diff = repo
+                .diff_tree_to_workdir_with_index(Some(&from_tree), Some(&mut opts))
+                .map_err(|error| format!("building diff commit:{sha}..working: {error}"))?;
+            Ok(diff_entries_from_diff(&diff))
+        }
+        (StepEndpointKind::Index, StepEndpointKind::Working) => {
+            let index = repo
+                .index()
+                .map_err(|error| format!("reading git index: {error}"))?;
+            let mut opts = GitDiffOptions::new();
+            opts.include_untracked(true).recurse_untracked_dirs(true);
+            let diff = repo
+                .diff_index_to_workdir(Some(&index), Some(&mut opts))
+                .map_err(|error| format!("building diff index..working: {error}"))?;
+            Ok(diff_entries_from_diff(&diff))
+        }
+        (StepEndpointKind::Index, StepEndpointKind::Commit { sha }) => {
+            let from_tree = resolve_index_tree(repo)?;
+            let to_tree = resolve_commit_tree(repo, sha)?;
+            let diff = repo
+                .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)
+                .map_err(|error| format!("building diff index..commit:{sha}: {error}"))?;
+            Ok(diff_entries_from_diff(&diff))
+        }
+        (StepEndpointKind::Working, StepEndpointKind::Index) => {
+            let entries = diff_entries_between_endpoints(
+                repo,
+                &StepEndpointKind::Index,
+                &StepEndpointKind::Working,
+            )?;
+            Ok(invert_diff_entries(entries))
+        }
+        (StepEndpointKind::Working, StepEndpointKind::Commit { sha }) => {
+            let entries = diff_entries_between_endpoints(
+                repo,
+                &StepEndpointKind::Commit { sha: sha.clone() },
+                &StepEndpointKind::Working,
+            )?;
+            Ok(invert_diff_entries(entries))
+        }
+        (StepEndpointKind::Index, StepEndpointKind::Index)
+        | (StepEndpointKind::Working, StepEndpointKind::Working) => Ok(vec![]),
+    }
+}
+
+fn diff_entries_from_diff(diff: &git2::Diff<'_>) -> Vec<DiffEntry> {
+    let mut entries = Vec::new();
+    for delta in diff.deltas() {
+        let old_path = delta
+            .old_file()
+            .path()
+            .and_then(|path| path.to_str())
+            .map(str::to_string);
+        let new_path = delta
+            .new_file()
+            .path()
+            .and_then(|path| path.to_str())
+            .map(str::to_string);
+        let status = match delta.status() {
+            Delta::Added => FileStatus::Added,
+            Delta::Deleted => FileStatus::Deleted,
+            Delta::Modified => FileStatus::Modified,
+            Delta::Renamed => FileStatus::Renamed,
+            _ => continue,
+        };
+        let entry = match status {
+            FileStatus::Added => DiffEntry {
+                status,
+                before_path: None,
+                after_path: new_path,
+            },
+            FileStatus::Deleted => DiffEntry {
+                status,
+                before_path: old_path,
+                after_path: None,
+            },
+            FileStatus::Modified | FileStatus::Renamed => DiffEntry {
+                status,
+                before_path: old_path.clone().or(new_path.clone()),
+                after_path: new_path.or(old_path),
+            },
+        };
+        entries.push(entry);
+    }
+    entries
+}
+
+fn invert_diff_entries(entries: Vec<DiffEntry>) -> Vec<DiffEntry> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let status = match entry.status {
+                FileStatus::Added => FileStatus::Deleted,
+                FileStatus::Deleted => FileStatus::Added,
+                FileStatus::Modified => FileStatus::Modified,
+                FileStatus::Renamed => FileStatus::Renamed,
+            };
+            DiffEntry {
+                status,
+                before_path: entry.after_path,
+                after_path: entry.before_path,
+            }
+        })
+        .collect()
+}
+
+fn read_endpoint_content(
+    repo: &Repository,
+    repo_root: &Path,
+    endpoint: &EndpointSnapshot<'_>,
+    path: &str,
+) -> Option<String> {
+    match endpoint {
+        EndpointSnapshot::Commit(tree) => read_blob_from_tree(repo, tree, path),
+        EndpointSnapshot::Index(index) => read_blob_from_index(repo, index, path),
+        EndpointSnapshot::Working => {
+            let absolute = repo_root.join(path);
+            std::fs::read_to_string(absolute).ok()
+        }
+    }
+}
+
+fn read_blob_from_tree(repo: &Repository, tree: &Tree<'_>, path: &str) -> Option<String> {
+    let entry = tree.get_path(Path::new(path)).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    String::from_utf8(blob.content().to_vec()).ok()
+}
+
+fn read_blob_from_index(repo: &Repository, index: &git2::Index, path: &str) -> Option<String> {
+    let entry = index.get_path(Path::new(path), 0)?;
+    let blob = repo.find_blob(entry.id).ok()?;
+    String::from_utf8(blob.content().to_vec()).ok()
 }
 
 #[cfg(test)]
@@ -776,27 +1178,38 @@ mod tests {
             .as_nanos();
         let base = std::env::temp_dir().join(format!("sem-commit-nav-{stamp}"));
         let lineage = init_repo_with_three_commits(&base);
-        let lineage_index: HashMap<String, usize> = lineage
+        let endpoints: Vec<StepEndpoint> = lineage
+            .iter()
+            .rev()
+            .map(|sha| StepEndpoint {
+                endpoint_id: commit_endpoint_id(sha),
+                display_ref: None,
+                kind: StepEndpointKind::Commit { sha: sha.clone() },
+            })
+            .collect();
+        let endpoint_index: HashMap<String, usize> = endpoints
             .iter()
             .enumerate()
-            .map(|(index, sha)| (sha.clone(), index))
+            .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
             .collect();
         let context = CommitNavigationContext {
             cwd: base.to_string_lossy().to_string(),
             file_exts: vec![],
             source_mode: TuiSourceMode::Commit,
-            lineage: lineage.clone(),
-            lineage_index,
+            endpoints,
+            endpoint_index,
         };
 
         let middle_sha = lineage[1].clone();
+        let middle_endpoint_id = commit_endpoint_id(&middle_sha);
 
         let older = process_commit_step_request(
             &context,
             &CommitStepRequest {
                 request_id: 1,
                 action: CommitStepAction::Older,
-                current_sha: middle_sha.clone(),
+                current_endpoint_id: middle_endpoint_id.clone(),
+                current_index: 1,
                 source_mode: TuiSourceMode::Commit,
             },
         );
@@ -814,7 +1227,8 @@ mod tests {
             &CommitStepRequest {
                 request_id: 2,
                 action: CommitStepAction::Newer,
-                current_sha: middle_sha,
+                current_endpoint_id: middle_endpoint_id,
+                current_index: 1,
                 source_mode: TuiSourceMode::Commit,
             },
         );
@@ -832,7 +1246,8 @@ mod tests {
             &CommitStepRequest {
                 request_id: 3,
                 action: CommitStepAction::Newer,
-                current_sha: lineage[0].clone(),
+                current_endpoint_id: commit_endpoint_id(&lineage[0]),
+                current_index: 2,
                 source_mode: TuiSourceMode::Commit,
             },
         );
@@ -843,10 +1258,10 @@ mod tests {
             &CommitStepRequest {
                 request_id: 4,
                 action: CommitStepAction::Older,
-                current_sha: lineage
-                    .last()
-                    .expect("lineage should have a root commit")
-                    .clone(),
+                current_endpoint_id: commit_endpoint_id(
+                    lineage.last().expect("lineage should have a root commit"),
+                ),
+                current_index: 0,
                 source_mode: TuiSourceMode::Commit,
             },
         );
@@ -858,11 +1273,14 @@ mod tests {
     #[test]
     fn process_commit_step_request_returns_unsupported_for_non_commit_mode() {
         let context = CommitNavigationContext {
-            cwd: "/tmp/not-used".to_string(),
+            cwd: std::env::current_dir()
+                .expect("cwd should resolve")
+                .to_string_lossy()
+                .to_string(),
             file_exts: vec![],
             source_mode: TuiSourceMode::Unsupported,
-            lineage: vec![],
-            lineage_index: HashMap::new(),
+            endpoints: vec![],
+            endpoint_index: HashMap::new(),
         };
 
         let response = process_commit_step_request(
@@ -870,11 +1288,211 @@ mod tests {
             &CommitStepRequest {
                 request_id: 7,
                 action: CommitStepAction::Older,
-                current_sha: "deadbeef".to_string(),
+                current_endpoint_id: "deadbeef".to_string(),
+                current_index: 0,
                 source_mode: TuiSourceMode::Unsupported,
             },
         );
         assert_eq!(response.status, CommitLoadStatus::UnsupportedMode);
         assert!(response.retain_previous_snapshot);
+    }
+
+    #[test]
+    fn build_commit_navigation_context_builds_oldest_to_newest_endpoint_path() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-step-path-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.commit = Some("HEAD~1".to_string());
+
+        let (context, cursor) = build_commit_navigation_context(&options)
+            .expect("context should build")
+            .expect("commit mode should enable stepping");
+
+        assert_eq!(context.endpoints.len(), 3);
+        assert_eq!(
+            context.endpoints[0].endpoint_id,
+            commit_endpoint_id(lineage.last().expect("root commit should exist"))
+        );
+        assert_eq!(
+            context.endpoints[2].endpoint_id,
+            commit_endpoint_id(&lineage[0])
+        );
+        assert_eq!(cursor.endpoint_id, commit_endpoint_id(&lineage[1]));
+        assert_eq!(cursor.index, 1);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn endpoint_id_to_kind_parses_commit_index_and_working() {
+        let commit = endpoint_id_to_kind("commit:abc123").expect("commit endpoint id must parse");
+        assert_eq!(
+            commit,
+            StepEndpointKind::Commit {
+                sha: "abc123".to_string()
+            }
+        );
+        assert_eq!(
+            endpoint_id_to_kind("index").expect("index endpoint id must parse"),
+            StepEndpointKind::Index
+        );
+        assert_eq!(
+            endpoint_id_to_kind("WORKING").expect("working endpoint id must parse"),
+            StepEndpointKind::Working
+        );
+    }
+
+    #[test]
+    fn endpoint_loader_supports_commit_to_index_and_index_to_working() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-endpoint-loader-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n")
+            .expect("initial file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+
+        let git = GitBridge::open(&base).expect("repo should open");
+        let head_sha = git.get_head_sha().expect("head should resolve");
+
+        std::fs::write(base.join("example.rs"), "fn one_staged() {}\n")
+            .expect("staged content should write");
+        run_git(&base, &["add", "example.rs"]);
+
+        let commit_to_index = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Commit {
+                sha: head_sha.clone(),
+            },
+            &StepEndpointKind::Index,
+        )
+        .expect("commit->index loader should succeed");
+        let staged_change = commit_to_index
+            .iter()
+            .find(|change| change.file_path == "example.rs")
+            .expect("staged change should be present");
+        assert_eq!(staged_change.status, FileStatus::Modified);
+        assert_eq!(
+            staged_change.before_content.as_deref(),
+            Some("fn one() {}\n")
+        );
+        assert_eq!(
+            staged_change.after_content.as_deref(),
+            Some("fn one_staged() {}\n")
+        );
+
+        std::fs::write(base.join("example.rs"), "fn one_working() {}\n")
+            .expect("working content should write");
+
+        let index_to_working = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Index,
+            &StepEndpointKind::Working,
+        )
+        .expect("index->working loader should succeed");
+        let working_change = index_to_working
+            .iter()
+            .find(|change| change.file_path == "example.rs")
+            .expect("working change should be present");
+        assert_eq!(working_change.status, FileStatus::Modified);
+        assert_eq!(
+            working_change.before_content.as_deref(),
+            Some("fn one_staged() {}\n")
+        );
+        assert_eq!(
+            working_change.after_content.as_deref(),
+            Some("fn one_working() {}\n")
+        );
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn load_endpoint_diff_result_returns_empty_for_self_comparison() {
+        let endpoint = StepEndpoint {
+            endpoint_id: "index".to_string(),
+            display_ref: Some("INDEX".to_string()),
+            kind: StepEndpointKind::Index,
+        };
+        let result = load_endpoint_diff_result("/tmp/not-used", &endpoint, &endpoint, &[])
+            .expect("self comparison should return empty diff result");
+        assert_eq!(result.file_count, 0);
+        assert_eq!(result.changes.len(), 0);
+    }
+
+    #[test]
+    fn process_step_request_reports_cursor_index_mismatch_as_load_failed() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-step-mismatch-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n").expect("file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+
+        let context = CommitNavigationContext {
+            cwd: base.to_string_lossy().to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Commit,
+            endpoints: vec![
+                StepEndpoint {
+                    endpoint_id: "commit:a".to_string(),
+                    display_ref: None,
+                    kind: StepEndpointKind::Commit {
+                        sha: "a".to_string(),
+                    },
+                },
+                StepEndpoint {
+                    endpoint_id: "commit:b".to_string(),
+                    display_ref: None,
+                    kind: StepEndpointKind::Commit {
+                        sha: "b".to_string(),
+                    },
+                },
+            ],
+            endpoint_index: HashMap::from([
+                ("commit:a".to_string(), 0usize),
+                ("commit:b".to_string(), 1usize),
+            ]),
+        };
+
+        let response = process_step_request(
+            &context,
+            &StepRequest {
+                request_id: 99,
+                action: StepAction::Older,
+                current_endpoint_id: "commit:b".to_string(),
+                current_index: 0,
+                source_mode: TuiSourceMode::Commit,
+            },
+        );
+        assert_eq!(response.status, StepLoadStatus::LoadFailed);
+        assert!(response.retain_previous_snapshot);
+        let error = response.error.unwrap_or_default();
+        assert!(
+            error.contains("cursor index mismatch"),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

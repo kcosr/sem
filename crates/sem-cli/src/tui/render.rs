@@ -1069,6 +1069,8 @@ mod tests {
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
             Some(CommitCursor {
+                endpoint_id: "commit:0123456789abcdef".to_string(),
+                index: 0,
                 rev_label: Some("HEAD~2".to_string()),
                 sha: "0123456789abcdef".to_string(),
                 subject: "feat: sample".to_string(),

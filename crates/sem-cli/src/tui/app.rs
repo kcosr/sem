@@ -768,6 +768,8 @@ mod tests {
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
+                endpoint_id: "commit:abc1234".to_string(),
+                index: 0,
                 rev_label: Some("HEAD~2".to_string()),
                 sha: "abc1234".to_string(),
                 subject: "test subject".to_string(),
@@ -811,6 +813,8 @@ mod tests {
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
             Some(CommitCursor {
+                endpoint_id: "commit:0123456789abcdef".to_string(),
+                index: 0,
                 rev_label: Some("HEAD~3".to_string()),
                 sha: "0123456789abcdef".to_string(),
                 subject: "feat: add stepping".to_string(),
@@ -826,6 +830,8 @@ mod tests {
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
             Some(CommitCursor {
+                endpoint_id: "commit:abcdef0123456789".to_string(),
+                index: 0,
                 rev_label: None,
                 sha: "abcdef0123456789".to_string(),
                 subject: "chore: cleanup".to_string(),
@@ -850,6 +856,8 @@ mod tests {
             status: CommitLoadStatus::Loaded,
             snapshot: Some(CommitSnapshot {
                 cursor: CommitCursor {
+                    endpoint_id: "commit:abc1234".to_string(),
+                    index: 0,
                     rev_label: Some("HEAD~0".to_string()),
                     sha: "abc1234".to_string(),
                     subject: "empty semantic diff".to_string(),
