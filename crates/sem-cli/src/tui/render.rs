@@ -4,6 +4,7 @@ use sem_core::model::change::ChangeType;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Mutex, MutexGuard};
 use syntect::easy::HighlightLines;
@@ -28,6 +29,7 @@ const DIFF_ADD_BG: Color = Color::Rgb(33, 58, 43);
 const DIFF_REMOVE_BG: Color = Color::Rgb(74, 34, 29);
 const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
 const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
+const DIFF_HUNK_FG: Color = Color::Gray;
 
 #[derive(Clone, Copy, Debug)]
 struct ListColumnWidths {
@@ -184,24 +186,28 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
         .rows()
         .get(app.selected())
         .map(|row| row.file_path.as_str());
+    let content_height = usize::from(chunks[1].height.saturating_sub(2)).max(1);
+    let start = app.detail_scroll();
 
     match app.effective_view() {
         DiffView::Unified => {
             let rows = build_unified_render_rows(app.unified_lines());
-            let old_width = line_number_width(rows.iter().filter_map(|row| row.old_number).max());
-            let new_width = line_number_width(rows.iter().filter_map(|row| row.new_number).max());
-            let lines: Vec<Line<'_>> = app
-                .unified_lines()
+            let number_width = line_number_width(
+                rows.iter()
+                    .flat_map(|row| [row.old_number, row.new_number])
+                    .flatten()
+                    .max(),
+            );
+            let end = (start + content_height).min(rows.len());
+            let lines: Vec<Line<'_>> = rows[start..end]
                 .iter()
-                .zip(rows.iter())
-                .map(|(_, row)| render_unified_row(row, old_width, new_width, selected_file_path))
+                .map(|row| render_unified_row(row, number_width, selected_file_path))
                 .collect();
 
             frame.render_widget(
                 Paragraph::new(lines)
                     .block(Block::default().borders(Borders::ALL).title("Diff"))
-                    .wrap(Wrap { trim: false })
-                    .scroll((saturating_scroll(app.detail_scroll()), 0)),
+                    .wrap(Wrap { trim: false }),
                 chunks[1],
             );
         }
@@ -209,16 +215,15 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
             let area = chunks[1];
             let line_width = area.width.saturating_sub(6) as usize;
             let half = (line_width / 2).max(20);
-            let lines: Vec<Line<'_>> = app
-                .side_by_side_lines()
+            let side_lines = app.side_by_side_lines();
+            let end = (start + content_height).min(side_lines.len());
+            let lines: Vec<Line<'_>> = side_lines[start..end]
                 .iter()
                 .map(|line| render_side_by_side_row(line, half, selected_file_path))
                 .collect();
 
             frame.render_widget(
-                Paragraph::new(lines)
-                    .block(Block::default().borders(Borders::ALL).title("Diff"))
-                    .scroll((saturating_scroll(app.detail_scroll()), 0)),
+                Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Diff")),
                 chunks[1],
             );
         }
@@ -372,15 +377,14 @@ fn build_unified_render_rows(lines: &[(LineKind, String)]) -> Vec<UnifiedRenderR
 
 fn render_unified_row(
     row: &UnifiedRenderRow,
-    old_width: usize,
-    new_width: usize,
+    number_width: usize,
     file_path: Option<&str>,
 ) -> Line<'static> {
     if row.kind == LineKind::Header {
         return Line::styled(
             row.text.clone(),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(DIFF_HUNK_FG)
                 .add_modifier(Modifier::BOLD),
         );
     }
@@ -413,21 +417,20 @@ fn render_unified_row(
         LineKind::Header => unreachable!("header rows are handled above"),
     };
 
-    let old = row.old_number.map_or_else(
-        || " ".repeat(old_width),
-        |value| format!("{value:>old_width$}"),
-    );
-    let new = row.new_number.map_or_else(
-        || " ".repeat(new_width),
-        |value| format!("{value:>new_width$}"),
+    let line_number = if row.kind == LineKind::Removed {
+        row.old_number
+    } else {
+        row.new_number.or(row.old_number)
+    };
+    let number = line_number.map_or_else(
+        || " ".repeat(number_width),
+        |value| format!("{value:>number_width$}"),
     );
     let content_spans = highlight_text_spans(file_path, &row.text, row.kind)
         .unwrap_or_else(|| vec![Span::styled(row.text.clone(), content_style)]);
 
     let mut spans = vec![
-        Span::styled(old, Style::default().fg(DIFF_GUTTER_FG)),
-        Span::raw(" "),
-        Span::styled(new, Style::default().fg(DIFF_GUTTER_FG)),
+        Span::styled(number, Style::default().fg(DIFF_GUTTER_FG)),
         Span::raw(" "),
         Span::styled(format!("{} ", row.sign), sign_style),
     ];
@@ -464,9 +467,9 @@ fn diff_styles_for_kind(kind: LineKind) -> (char, Style, Style, Style) {
     match kind {
         LineKind::Header => (
             ' ',
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(DIFF_HUNK_FG),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(DIFF_HUNK_FG)
                 .add_modifier(Modifier::BOLD),
             Style::default(),
         ),
@@ -581,6 +584,8 @@ static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static SYNTAX_THEME: OnceLock<Theme> = OnceLock::new();
 static HIGHLIGHT_CACHE: OnceLock<Mutex<HashMap<HighlightCacheKey, Vec<Span<'static>>>>> =
     OnceLock::new();
+static SYNTAX_PREWARM_STARTED: OnceLock<()> = OnceLock::new();
+static SYNTAX_READY: AtomicBool = AtomicBool::new(false);
 const HIGHLIGHT_CACHE_LIMIT: usize = 4096;
 
 #[derive(Clone, Eq)]
@@ -640,6 +645,11 @@ fn syntax_extension(file_path: Option<&str>) -> Option<String> {
 
 fn syntax_for_extension<'a>(set: &'a SyntaxSet, extension: Option<&str>) -> &'a SyntaxReference {
     if let Some(ext) = extension {
+        // Markdown grammars can be noticeably slower on first highlight;
+        // keep TUI responsive by treating them as plain text.
+        if matches!(ext, "md" | "markdown" | "mdx") {
+            return set.find_syntax_plain_text();
+        }
         if let Some(syntax) = set.find_syntax_by_extension(ext) {
             return syntax;
         }
@@ -653,6 +663,10 @@ fn highlight_text_spans(
     text: &str,
     kind: LineKind,
 ) -> Option<Vec<Span<'static>>> {
+    if !SYNTAX_READY.load(Ordering::Acquire) {
+        return None;
+    }
+
     if matches!(kind, LineKind::Header | LineKind::Unchanged) {
         return None;
     }
@@ -722,6 +736,19 @@ fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
         rt_style = rt_style.add_modifier(Modifier::UNDERLINED);
     }
     rt_style
+}
+
+pub(crate) fn prewarm_syntax_highlighting_async() {
+    if SYNTAX_PREWARM_STARTED.set(()).is_err() {
+        return;
+    }
+
+    std::thread::spawn(|| {
+        let _ = syntax_set();
+        let _ = syntax_theme();
+        SYNTAX_READY.store(true, Ordering::Release);
+        let _ = highlight_text_spans(Some("prewarm.rs"), "fn warm() {}", LineKind::Added);
+    });
 }
 
 fn fit_cell(text: &str, width: usize) -> String {
@@ -882,10 +909,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
-}
-
-fn saturating_scroll(scroll: usize) -> u16 {
-    u16::try_from(scroll).unwrap_or(u16::MAX)
 }
 
 #[cfg(test)]

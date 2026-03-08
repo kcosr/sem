@@ -27,6 +27,7 @@ pub fn run_tui(result: &DiffResult, initial_view: DiffView) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
+    render::prewarm_syntax_highlighting_async();
     app_state.set_list_header_command(invoked_command_line());
     if let Ok(size) = terminal.size() {
         app_state.set_viewport(size.width, size.height);
