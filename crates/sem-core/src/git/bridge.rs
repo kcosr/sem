@@ -46,6 +46,44 @@ impl GitBridge {
         Ok(oid.to_string())
     }
 
+    pub fn resolve_commit_sha(&self, reference: &str) -> Result<String, GitError> {
+        let obj = self.repo.revparse_single(reference)?;
+        let commit = obj.peel_to_commit()?;
+        Ok(commit.id().to_string())
+    }
+
+    pub fn get_commit_subject(&self, sha: &str) -> Result<String, GitError> {
+        let obj = self.repo.revparse_single(sha)?;
+        let commit = obj.peel_to_commit()?;
+        Ok(commit.summary().unwrap_or("").trim().to_string())
+    }
+
+    pub fn get_first_parent_sha(&self, sha: &str) -> Result<Option<String>, GitError> {
+        let obj = self.repo.revparse_single(sha)?;
+        let commit = obj.peel_to_commit()?;
+        if commit.parent_count() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(commit.parent(0)?.id().to_string()))
+        }
+    }
+
+    pub fn get_first_parent_lineage(&self, start_sha: &str) -> Result<Vec<String>, GitError> {
+        let obj = self.repo.revparse_single(start_sha)?;
+        let mut commit = obj.peel_to_commit()?;
+        let mut lineage = Vec::new();
+
+        loop {
+            lineage.push(commit.id().to_string());
+            if commit.parent_count() == 0 {
+                break;
+            }
+            commit = commit.parent(0)?;
+        }
+
+        Ok(lineage)
+    }
+
     /// Combined detect scope + get files in one call (fast path)
     pub fn detect_and_get_files(&self) -> Result<(DiffScope, Vec<FileChange>), GitError> {
         // Check for staged changes

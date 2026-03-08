@@ -2,6 +2,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process;
 use std::time::Instant;
+use std::{collections::HashMap, fmt};
 
 use clap::ValueEnum;
 use sem_core::git::bridge::GitBridge;
@@ -38,6 +39,77 @@ pub enum DiffView {
     Unified,
     #[value(name = "side-by-side")]
     SideBySide,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TuiSourceMode {
+    Commit,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitStepAction {
+    Older,
+    Newer,
+}
+
+impl fmt::Display for CommitStepAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommitStepAction::Older => write!(f, "stepOlder"),
+            CommitStepAction::Newer => write!(f, "stepNewer"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitCursor {
+    pub rev_label: Option<String>,
+    pub sha: String,
+    pub subject: String,
+    pub has_older: bool,
+    pub has_newer: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitNavigationContext {
+    pub cwd: String,
+    pub file_exts: Vec<String>,
+    pub source_mode: TuiSourceMode,
+    pub(crate) lineage: Vec<String>,
+    pub(crate) lineage_index: HashMap<String, usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitSnapshot {
+    pub cursor: CommitCursor,
+    pub result: DiffResult,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitStepRequest {
+    pub request_id: u64,
+    pub action: CommitStepAction,
+    pub current_sha: String,
+    pub source_mode: TuiSourceMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitLoadStatus {
+    Loaded,
+    LoadFailed,
+    UnsupportedMode,
+    BoundaryNoop,
+    IgnoredStaleResult,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitStepResponse {
+    pub applied_request_id: u64,
+    pub status: CommitLoadStatus,
+    pub snapshot: Option<CommitSnapshot>,
+    pub error: Option<String>,
+    pub retain_previous_snapshot: bool,
 }
 
 struct InputPhase {
@@ -242,7 +314,8 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(result, opts.diff_view)
+        let commit_navigation = build_commit_navigation_context(opts)?;
+        tui::run_tui(result, opts.diff_view, commit_navigation)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -255,9 +328,218 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
     Ok(Some(output))
 }
 
+pub fn is_commit_navigation_mode(opts: &DiffOptions) -> bool {
+    opts.tui
+        && opts.commit.is_some()
+        && opts.files.is_empty()
+        && !opts.stdin
+        && !opts.staged
+        && opts.from.is_none()
+        && opts.to.is_none()
+}
+
+pub fn build_commit_navigation_context(
+    opts: &DiffOptions,
+) -> Result<Option<(CommitNavigationContext, CommitCursor)>, String> {
+    if !is_commit_navigation_mode(opts) {
+        return Ok(None);
+    }
+
+    let commit_ref = opts
+        .commit
+        .as_deref()
+        .ok_or_else(|| "commit navigation requires --commit <rev>".to_string())?;
+    let git = GitBridge::open(Path::new(&opts.cwd))
+        .map_err(|_| "Not inside a Git repository.".to_string())?;
+
+    let session_head_sha = git
+        .get_head_sha()
+        .map_err(|error| format!("resolving HEAD: {error}"))?;
+    let lineage = git
+        .get_first_parent_lineage(&session_head_sha)
+        .map_err(|error| format!("building first-parent lineage: {error}"))?;
+    let lineage_index: HashMap<String, usize> = lineage
+        .iter()
+        .enumerate()
+        .map(|(index, sha)| (sha.clone(), index))
+        .collect();
+    let current_sha = git
+        .resolve_commit_sha(commit_ref)
+        .map_err(|error| format!("resolving commit {commit_ref}: {error}"))?;
+
+    let context = CommitNavigationContext {
+        cwd: opts.cwd.clone(),
+        file_exts: opts.file_exts.clone(),
+        source_mode: TuiSourceMode::Commit,
+        lineage,
+        lineage_index,
+    };
+    let cursor = build_commit_cursor(&git, &context, &current_sha)?;
+    Ok(Some((context, cursor)))
+}
+
+pub fn process_commit_step_request(
+    context: &CommitNavigationContext,
+    request: &CommitStepRequest,
+) -> CommitStepResponse {
+    if context.source_mode != TuiSourceMode::Commit || request.source_mode != TuiSourceMode::Commit
+    {
+        return CommitStepResponse {
+            applied_request_id: request.request_id,
+            status: CommitLoadStatus::UnsupportedMode,
+            snapshot: None,
+            error: None,
+            retain_previous_snapshot: true,
+        };
+    }
+
+    let git = match GitBridge::open(Path::new(&context.cwd)) {
+        Ok(git) => git,
+        Err(error) => {
+            return CommitStepResponse {
+                applied_request_id: request.request_id,
+                status: CommitLoadStatus::LoadFailed,
+                snapshot: None,
+                error: Some(error.to_string()),
+                retain_previous_snapshot: true,
+            };
+        }
+    };
+
+    let target_sha = match resolve_step_target(&git, context, &request.current_sha, request.action)
+    {
+        Ok(Some(target_sha)) => target_sha,
+        Ok(None) => {
+            return CommitStepResponse {
+                applied_request_id: request.request_id,
+                status: CommitLoadStatus::BoundaryNoop,
+                snapshot: None,
+                error: None,
+                retain_previous_snapshot: true,
+            };
+        }
+        Err(error) => {
+            return CommitStepResponse {
+                applied_request_id: request.request_id,
+                status: CommitLoadStatus::LoadFailed,
+                snapshot: None,
+                error: Some(error),
+                retain_previous_snapshot: true,
+            };
+        }
+    };
+
+    let result = match load_commit_diff_result(&context.cwd, &target_sha, &context.file_exts) {
+        Ok(result) => result,
+        Err(error) => {
+            return CommitStepResponse {
+                applied_request_id: request.request_id,
+                status: CommitLoadStatus::LoadFailed,
+                snapshot: None,
+                error: Some(error),
+                retain_previous_snapshot: true,
+            };
+        }
+    };
+
+    match build_commit_cursor(&git, context, &target_sha) {
+        Ok(cursor) => CommitStepResponse {
+            applied_request_id: request.request_id,
+            status: CommitLoadStatus::Loaded,
+            snapshot: Some(CommitSnapshot { cursor, result }),
+            error: None,
+            retain_previous_snapshot: false,
+        },
+        Err(error) => CommitStepResponse {
+            applied_request_id: request.request_id,
+            status: CommitLoadStatus::LoadFailed,
+            snapshot: None,
+            error: Some(error),
+            retain_previous_snapshot: true,
+        },
+    }
+}
+
+fn resolve_step_target(
+    git: &GitBridge,
+    context: &CommitNavigationContext,
+    current_sha: &str,
+    action: CommitStepAction,
+) -> Result<Option<String>, String> {
+    let index = context.lineage_index.get(current_sha).copied();
+    match action {
+        CommitStepAction::Older => {
+            if let Some(index) = index {
+                if index + 1 < context.lineage.len() {
+                    return Ok(Some(context.lineage[index + 1].clone()));
+                }
+                return Ok(None);
+            }
+            git.get_first_parent_sha(current_sha)
+                .map_err(|error| format!("resolving first parent for {current_sha}: {error}"))
+        }
+        CommitStepAction::Newer => {
+            if let Some(index) = index {
+                if index > 0 {
+                    return Ok(Some(context.lineage[index - 1].clone()));
+                }
+                return Ok(None);
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn build_commit_cursor(
+    git: &GitBridge,
+    context: &CommitNavigationContext,
+    sha: &str,
+) -> Result<CommitCursor, String> {
+    let index = context.lineage_index.get(sha).copied();
+    let has_newer = index.is_some_and(|value| value > 0);
+    let has_older = if let Some(index) = index {
+        index + 1 < context.lineage.len()
+    } else {
+        git.get_first_parent_sha(sha)
+            .map_err(|error| format!("resolving first parent for {sha}: {error}"))?
+            .is_some()
+    };
+    let subject = git
+        .get_commit_subject(sha)
+        .map_err(|error| format!("resolving subject for {sha}: {error}"))?;
+
+    Ok(CommitCursor {
+        rev_label: index.map(|value| format!("HEAD~{value}")),
+        sha: sha.to_string(),
+        subject,
+        has_older,
+        has_newer,
+    })
+}
+
+fn load_commit_diff_result(
+    cwd: &str,
+    sha: &str,
+    file_exts: &[String],
+) -> Result<DiffResult, String> {
+    let git =
+        GitBridge::open(Path::new(cwd)).map_err(|_| "Not inside a Git repository.".to_string())?;
+    let scope = DiffScope::Commit {
+        sha: sha.to_string(),
+    };
+    let file_changes = git
+        .get_changed_files(&scope)
+        .map_err(|error| format!("loading changed files for commit {sha}: {error}"))?;
+    let filtered = filter_file_changes(file_changes, file_exts);
+    Ok(compute_diff_result(&filtered).result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn base_options() -> DiffOptions {
@@ -363,5 +645,145 @@ mod tests {
             .expect("empty result should be rendered")
             .expect("tui no-change path should return terminal text");
         assert!(output.contains("No semantic changes detected."));
+    }
+
+    fn init_repo_with_three_commits(base: &Path) -> Vec<String> {
+        std::fs::create_dir_all(base).expect("temp repo dir should be created");
+
+        run_git(base, &["init"]);
+        run_git(base, &["config", "user.email", "sem@example.com"]);
+        run_git(base, &["config", "user.name", "sem"]);
+
+        std::fs::write(base.join("example.rs"), "fn one() {}\n").expect("first write should work");
+        run_git(base, &["add", "."]);
+        run_git(base, &["commit", "-m", "first"]);
+
+        std::fs::write(base.join("example.rs"), "fn one() {}\nfn two() {}\n")
+            .expect("second write should work");
+        run_git(base, &["add", "."]);
+        run_git(base, &["commit", "-m", "second"]);
+
+        std::fs::write(
+            base.join("example.rs"),
+            "fn one() {}\nfn two() {}\nfn three() {}\n",
+        )
+        .expect("third write should work");
+        run_git(base, &["add", "."]);
+        run_git(base, &["commit", "-m", "third"]);
+
+        let git = GitBridge::open(base).expect("repo should open");
+        let head = git.get_head_sha().expect("head should resolve");
+        git.get_first_parent_lineage(&head)
+            .expect("lineage should resolve")
+    }
+
+    fn run_git(base: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(base)
+            .status()
+            .expect("git command should spawn");
+        assert!(
+            status.success(),
+            "git {:?} must succeed, exit code: {:?}",
+            args,
+            status.code()
+        );
+    }
+
+    #[test]
+    fn process_commit_step_request_transitions_cursor_on_lineage() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-commit-nav-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+        let lineage_index: HashMap<String, usize> = lineage
+            .iter()
+            .enumerate()
+            .map(|(index, sha)| (sha.clone(), index))
+            .collect();
+        let context = CommitNavigationContext {
+            cwd: base.to_string_lossy().to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Commit,
+            lineage: lineage.clone(),
+            lineage_index,
+        };
+
+        let middle_sha = lineage[1].clone();
+
+        let older = process_commit_step_request(
+            &context,
+            &CommitStepRequest {
+                request_id: 1,
+                action: CommitStepAction::Older,
+                current_sha: middle_sha.clone(),
+                source_mode: TuiSourceMode::Commit,
+            },
+        );
+        assert_eq!(older.status, CommitLoadStatus::Loaded);
+        let older_cursor = older
+            .snapshot
+            .expect("older request should return snapshot")
+            .cursor;
+        assert_eq!(older_cursor.sha, lineage[2]);
+        assert!(!older_cursor.has_older);
+        assert!(older_cursor.has_newer);
+
+        let newer = process_commit_step_request(
+            &context,
+            &CommitStepRequest {
+                request_id: 2,
+                action: CommitStepAction::Newer,
+                current_sha: middle_sha,
+                source_mode: TuiSourceMode::Commit,
+            },
+        );
+        assert_eq!(newer.status, CommitLoadStatus::Loaded);
+        let newer_cursor = newer
+            .snapshot
+            .expect("newer request should return snapshot")
+            .cursor;
+        assert_eq!(newer_cursor.sha, lineage[0]);
+        assert!(newer_cursor.has_older);
+        assert!(!newer_cursor.has_newer);
+
+        let boundary = process_commit_step_request(
+            &context,
+            &CommitStepRequest {
+                request_id: 3,
+                action: CommitStepAction::Newer,
+                current_sha: lineage[0].clone(),
+                source_mode: TuiSourceMode::Commit,
+            },
+        );
+        assert_eq!(boundary.status, CommitLoadStatus::BoundaryNoop);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn process_commit_step_request_returns_unsupported_for_non_commit_mode() {
+        let context = CommitNavigationContext {
+            cwd: "/tmp/not-used".to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Unsupported,
+            lineage: vec![],
+            lineage_index: HashMap::new(),
+        };
+
+        let response = process_commit_step_request(
+            &context,
+            &CommitStepRequest {
+                request_id: 7,
+                action: CommitStepAction::Older,
+                current_sha: "deadbeef".to_string(),
+                source_mode: TuiSourceMode::Unsupported,
+            },
+        );
+        assert_eq!(response.status, CommitLoadStatus::UnsupportedMode);
+        assert!(response.retain_previous_snapshot);
     }
 }

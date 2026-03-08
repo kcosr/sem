@@ -3,7 +3,10 @@ use sem_core::model::change::SemanticChange;
 use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
 
-use crate::commands::diff::DiffView;
+use crate::commands::diff::{
+    CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
+    TuiSourceMode,
+};
 
 use super::detail::{render_change, LineKind, RenderedDiff, SideBySideLine};
 
@@ -40,29 +43,16 @@ pub struct AppState {
     should_quit: bool,
     viewport_width: u16,
     viewport_height: u16,
+    commit_source_mode: TuiSourceMode,
+    commit_cursor: Option<CommitCursor>,
+    commit_loading: bool,
+    commit_status_message: Option<String>,
+    pending_commit_action: Option<CommitStepAction>,
 }
 
 impl AppState {
     pub fn from_diff_result(result: &DiffResult, initial_view: DiffView) -> Self {
-        let mut changes = result.changes.clone();
-        // Stable sort groups by file while preserving semantic order within each file.
-        changes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-
-        let rows = changes
-            .into_iter()
-            .map(|change| {
-                let (added_lines, removed_lines) = change_line_counts(&change);
-                EntityRow {
-                    file_path: change.file_path.clone(),
-                    entity_type: change.entity_type.clone(),
-                    entity_name: change.entity_name.clone(),
-                    added_lines,
-                    removed_lines,
-                    range_label: range_label(&change),
-                    change,
-                }
-            })
-            .collect();
+        let rows = Self::rows_from_diff_result(result);
 
         Self {
             rows,
@@ -77,7 +67,34 @@ impl AppState {
             should_quit: false,
             viewport_width: 120,
             viewport_height: 40,
+            commit_source_mode: TuiSourceMode::Unsupported,
+            commit_cursor: None,
+            commit_loading: false,
+            commit_status_message: None,
+            pending_commit_action: None,
         }
+    }
+
+    fn rows_from_diff_result(result: &DiffResult) -> Vec<EntityRow> {
+        let mut changes = result.changes.clone();
+        // Stable sort groups by file while preserving semantic order within each file.
+        changes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+        changes
+            .into_iter()
+            .map(|change| {
+                let (added_lines, removed_lines) = change_line_counts(&change);
+                EntityRow {
+                    file_path: change.file_path.clone(),
+                    entity_type: change.entity_type.clone(),
+                    entity_name: change.entity_name.clone(),
+                    added_lines,
+                    removed_lines,
+                    range_label: range_label(&change),
+                    change,
+                }
+            })
+            .collect()
     }
 
     pub fn set_viewport(&mut self, width: u16, height: u16) {
@@ -95,6 +112,90 @@ impl AppState {
 
     pub fn list_header_command(&self) -> &str {
         &self.list_header_command
+    }
+
+    pub fn configure_commit_navigation(
+        &mut self,
+        source_mode: TuiSourceMode,
+        cursor: Option<CommitCursor>,
+    ) {
+        self.commit_source_mode = source_mode;
+        self.commit_cursor = cursor;
+    }
+
+    pub fn commit_source_mode(&self) -> TuiSourceMode {
+        self.commit_source_mode
+    }
+
+    pub fn commit_cursor(&self) -> Option<&CommitCursor> {
+        self.commit_cursor.as_ref()
+    }
+
+    pub fn commit_loading(&self) -> bool {
+        self.commit_loading
+    }
+
+    pub fn commit_status_message(&self) -> Option<&str> {
+        self.commit_status_message.as_deref()
+    }
+
+    pub fn set_commit_loading(&mut self, loading: bool) {
+        self.commit_loading = loading;
+    }
+
+    pub fn queue_commit_action(&mut self, action: CommitStepAction) {
+        self.pending_commit_action = Some(action);
+    }
+
+    pub fn take_pending_commit_action(&mut self) -> Option<CommitStepAction> {
+        self.pending_commit_action.take()
+    }
+
+    pub fn apply_commit_step_response(&mut self, response: CommitStepResponse) {
+        match response.status {
+            CommitLoadStatus::Loaded => {
+                if let Some(snapshot) = response.snapshot {
+                    self.apply_commit_snapshot(snapshot);
+                    self.commit_status_message = Some("Commit snapshot loaded".to_string());
+                }
+                self.commit_loading = false;
+            }
+            CommitLoadStatus::LoadFailed => {
+                let mut message = response
+                    .error
+                    .unwrap_or_else(|| "commit reload failed".to_string());
+                if response.retain_previous_snapshot {
+                    message.push_str(" (previous snapshot retained)");
+                }
+                self.commit_status_message = Some(message);
+                self.commit_loading = false;
+            }
+            CommitLoadStatus::UnsupportedMode => {
+                self.commit_status_message =
+                    Some("Commit navigation unavailable for current input mode".to_string());
+                self.commit_loading = false;
+            }
+            CommitLoadStatus::BoundaryNoop => {
+                self.commit_status_message = Some("Commit boundary reached".to_string());
+                self.commit_loading = false;
+            }
+            CommitLoadStatus::IgnoredStaleResult => {
+                self.commit_status_message = Some("Ignored stale commit reload result".to_string());
+            }
+        }
+    }
+
+    fn apply_commit_snapshot(&mut self, snapshot: CommitSnapshot) {
+        self.commit_cursor = Some(snapshot.cursor);
+        self.rows = Self::rows_from_diff_result(&snapshot.result);
+        self.selected = 0;
+        self.detail_scroll = 0;
+        self.detail_hunk_index = 0;
+        if self.mode == Mode::Detail {
+            self.refresh_detail();
+        } else {
+            self.detail = None;
+        }
     }
 
     pub fn selected(&self) -> usize {
@@ -610,5 +711,73 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(app.detail_title().contains("beta"));
+    }
+
+    #[test]
+    fn apply_loaded_commit_snapshot_resets_selection_and_cursor_state() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                rev_label: Some("HEAD~2".to_string()),
+                sha: "abc1234".to_string(),
+                subject: "test subject".to_string(),
+                has_older: true,
+                has_newer: true,
+            },
+            result: DiffResult {
+                changes: vec![change("c.ts", "gamma", "x\n", "y\n")],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+        };
+
+        app.apply_commit_step_response(CommitStepResponse {
+            applied_request_id: 1,
+            status: CommitLoadStatus::Loaded,
+            snapshot: Some(snapshot),
+            error: None,
+            retain_previous_snapshot: false,
+        });
+
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(
+            app.commit_cursor().map(|cursor| cursor.sha.as_str()),
+            Some("abc1234")
+        );
+        assert_eq!(app.commit_status_message(), Some("Commit snapshot loaded"));
+    }
+
+    #[test]
+    fn unsupported_mode_response_sets_status_hint() {
+        let mut app = app();
+        app.configure_commit_navigation(TuiSourceMode::Unsupported, None);
+        app.set_commit_loading(true);
+        assert!(app.commit_loading());
+        app.queue_commit_action(CommitStepAction::Older);
+        assert_eq!(
+            app.take_pending_commit_action(),
+            Some(CommitStepAction::Older)
+        );
+
+        app.apply_commit_step_response(CommitStepResponse {
+            applied_request_id: 2,
+            status: CommitLoadStatus::UnsupportedMode,
+            snapshot: None,
+            error: None,
+            retain_previous_snapshot: true,
+        });
+        assert_eq!(
+            app.commit_status_message(),
+            Some("Commit navigation unavailable for current input mode")
+        );
+        assert!(!app.commit_loading());
     }
 }
