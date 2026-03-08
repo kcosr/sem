@@ -1,5 +1,6 @@
 mod app;
 mod detail;
+pub(crate) mod http_state;
 mod render;
 mod review_state;
 
