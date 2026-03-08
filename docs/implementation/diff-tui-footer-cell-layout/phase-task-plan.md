@@ -153,6 +153,28 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.6 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `6acebc2`
+- Acceptance evidence:
+  - manual: verified H2 hardening + alignment scope:
+    - added narrow-width contention tests in `crates/sem-cli/src/tui/render.rs`
+    - aligned downstream footer-cell contracts in:
+      - `docs/implementation/diff-tui-entity-review-state/design.md`
+      - `docs/implementation/diff-tui-full-entity-toggle/design.md`
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to Rust/docs H2 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust/docs H2 scope).
+  - `cargo fmt -p sem-cli -- --check` (run in `crates/`) => PASS.
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (75 passed), including H2 hardening tests:
+    - `footer_layout_widths_keep_cell_width_stable_under_long_status_contention`
+    - `footer_layout_widths_omit_status_when_cells_consume_narrow_footer`
+- Review run IDs + triage outcomes:
+  - `r_20260308200108854_f4bcbc03` (`generic-gemini`): `accept` H2 scope completeness, deterministic status-vs-cell contention behavior, and downstream spec alignment; `defer` none; `reject` none.
+  - `r_20260308200146498_fea56513` (`generic-pi`): `accept` H2 scope completeness and downstream alignment; `accept` explicit `controls_width == 0` assertion for long-status contention test (applied in milestone commit); `defer` optional narrow `draw_footer` integration test and future multi-cell narrow-width coverage to downstream `r`/`e` implementation topics; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-footer-cell-layout/schema-proposal.md`
