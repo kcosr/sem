@@ -1037,6 +1037,33 @@ mod tests {
     }
 
     #[test]
+    fn impact_snapshot_reports_zero_for_leaf_entity() {
+        let leaf = entity("src/a.ts::function::leaf", "leaf", "src/a.ts", 1, 2);
+        let graph = EntityGraph {
+            entities: HashMap::from([(leaf.id.clone(), leaf.clone())]),
+            edges: vec![],
+            dependents: HashMap::new(),
+            dependencies: HashMap::new(),
+        };
+
+        let service = GraphSnapshotService::from_graph(graph, 10_000);
+        let snapshot = service.snapshot_for_selection(Some(&GraphSelection {
+            graph_id: Some(leaf.id.clone()),
+            file: leaf.file_path.clone(),
+            entity_type: leaf.entity_type.clone(),
+            entity_name: leaf.name.clone(),
+            line_range: Some([1, 2]),
+        }));
+
+        assert!(snapshot.graph_available);
+        assert_eq!(snapshot.reason, None);
+        assert_eq!(snapshot.impact_total, 0);
+        assert!(!snapshot.impact_truncated);
+        assert!(snapshot.impact_entities.is_empty());
+        assert_eq!(snapshot.panel_summary(), "deps:0 depBy:0 impact:0");
+    }
+
+    #[test]
     fn build_state_snapshot_serializes_full_shape() {
         let graph_snapshot = GraphImpactSnapshot::unavailable(
             GraphUnavailableReason::SelectionNotResolvable,
@@ -1092,6 +1119,35 @@ mod tests {
             expanded_snapshot.panel.summary,
             collapsed_snapshot.panel.summary
         );
+    }
+
+    #[test]
+    fn build_state_snapshot_serializes_source_mode_tokens() {
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let cases = [
+            (HttpSourceMode::Repository, "repository"),
+            (HttpSourceMode::Stdin, "stdin"),
+            (HttpSourceMode::TwoFile, "twoFile"),
+        ];
+
+        for (source_mode, expected) in cases {
+            let snapshot = build_state_snapshot(
+                &sample_session(true, 7778, source_mode),
+                sample_selection(false),
+                &graph_snapshot,
+                false,
+            );
+            let value = serde_json::to_value(snapshot).expect("snapshot must serialize");
+            assert_eq!(
+                value
+                    .pointer("/session/sourceMode")
+                    .and_then(Value::as_str),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

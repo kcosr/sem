@@ -25,7 +25,16 @@ Entity-level diff between commits. Shows which functions/classes were added, mod
 sem diff HEAD~1
 sem diff main..feature-branch
 sem diff HEAD~1 --file src/auth.ts
+sem diff --tui --tui-http
+sem diff --tui --tui-http --tui-http-port 8899
 ```
+
+`sem diff --tui --tui-http` enables a localhost-only read-only endpoint at `127.0.0.1:7778` by default:
+- `GET /state` returns `session`, `selection`, `graph`, `impact`, and `panel`
+- unknown route returns `404` JSON `{ "error": "notFound", "path": "<route>" }`
+- non-GET `/state` returns `405` JSON `{ "error": "methodNotAllowed", "path": "/state", "method": "<verb>" }`
+
+In TUI detail mode, `i` toggles an expanded impact panel with bounded dependency/dependent/impact lists.
 
 ### sem blame
 Entity-level blame. Shows who last modified each function/class, not each line.

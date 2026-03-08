@@ -66,6 +66,8 @@ sem diff --tui --commit HEAD~3
 sem diff --tui --from HEAD~5 --to HEAD
 sem diff --tui --from HEAD --to WORKING
 sem diff --tui --from HEAD~3 --to HEAD --step-mode pairwise
+sem diff --tui --tui-http
+sem diff --tui --tui-http --tui-http-port 8899
 
 # Read file changes from stdin (no git repo needed)
 echo '[{"filePath":"src/main.rs","status":"modified","beforeContent":"...","afterContent":"..."}]' \
@@ -94,6 +96,8 @@ sem blame src/auth.ts
 - `Enter`: open selected entity detail
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
+- `e`: toggle detail context mode (`hunk` / `entity`)
+- `i`: expand/collapse impact panel in detail mode
 - `Esc`: close detail view
 - `Tab`: toggle unified vs side-by-side detail view
 - `n/p`: jump to next/previous hunk
@@ -109,6 +113,22 @@ Startup defaults:
 - `--step-mode pairwise|cumulative` overrides startup only (`m` still toggles in-session)
 Pseudo-endpoints (`INDEX`, `WORKING`) are also supported in `--from/--to` outside TUI.
 Review state is persisted per-repo in `.sem/tui-review-state.json` (local metadata; `.sem/` is gitignored by default).
+Expanded impact panel behavior (`i` in detail mode):
+- panel consumes roughly half of detail content height, clamped to 4..12 rows
+- dependencies/dependents/impact sections each display up to 25 rows with `+N more` overflow indicators
+
+## Local HTTP state endpoint
+
+When enabled with `--tui-http`, TUI exposes a localhost-only read-only state snapshot endpoint:
+
+- `GET /state` -> `200` full payload sections: `session`, `selection`, `graph`, `impact`, `panel`
+- unknown route -> `404` JSON `{ "error": "notFound", "path": "<route>" }`
+- non-GET `/state` -> `405` JSON `{ "error": "methodNotAllowed", "path": "/state", "method": "<verb>" }`
+
+Notes:
+- default bind is `127.0.0.1:7778` (override with `--tui-http-port`)
+- bind failure is non-fatal (TUI continues)
+- endpoint does not emit CORS headers
 
 ## What it parses
 
