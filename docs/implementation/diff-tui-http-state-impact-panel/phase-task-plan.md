@@ -274,6 +274,40 @@ Gate:
   - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external/runtime reasons and fallback is documented here.
   - H1 gate requirement (`cargo test -p sem-cli` with snapshot/mapping tests) is satisfied.
 
+### 9.6 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `c3e3bb4`
+- Acceptance evidence:
+  - `npm run lint` => `NO-GO` for existing JS/TS workspace baseline in current environment (missing Node/module typings and dependency resolution; unrelated to H2 Rust runtime/endpoint scope).
+  - `npm test` => `NO-GO` in current environment (`vitest` binary unavailable).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (`141 passed, 0 failed`), including H2 runtime + endpoint coverage:
+    - `GET /state` success payload shape,
+    - deterministic `404`/`405`,
+    - bind-failure non-fatal continuation,
+    - snapshot replacement visibility across requests,
+    - JSON content-type header assertions.
+  - scripted localhost verification: `cargo test -p sem-cli tui::http_state::tests::http_server_ -- --nocapture` => PASS (`6 passed, 0 failed`), validating localhost listener behavior and deterministic route semantics.
+  - manual:
+    - `run_tui` now wires `HttpStateServer` start/stop to TUI lifecycle with non-fatal bind handling,
+    - TUI loop publishes full-shape shared snapshots (`session`, `selection`, `graph`, `impact`, `panel`) without blocking draw loop.
+- Review run IDs + triage outcomes:
+  - `r_20260308232601588_9a8a43dd` (`generic-gemini`) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308232613325_869c05fd` (`generic-gemini`, retry) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308232625543_fa0decd1` (`generic-pi`):
+    - `accept`:
+      - strengthen H2 test coverage for live snapshot propagation (`http_server_returns_updated_snapshot_after_replace`),
+      - assert JSON response content-type headers (`http_server_sets_json_content_type_header`).
+    - `defer`:
+      - tighter cadence/perf hardening (mutation-only snapshot writes, request timeout/panic resilience) to H4 hardening scope,
+      - explicit `panel.expanded` runtime semantics to H3 panel integration scope,
+      - gate wording precision for scripted localhost verification to H4 docs/finalization cleanup.
+    - `reject`:
+      - expanding H2 contract to include query-string route semantics, since current locked H2 contract is limited to `/state` `GET` and deterministic `404/405` outcomes.
+- Go/No-Go: GO
+- Notes:
+  - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external quota/runtime reasons and fallback is documented here.
+  - H2 gate requirement is satisfied via endpoint tests plus scripted localhost verification.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-http-state-impact-panel/schema-proposal.md`
