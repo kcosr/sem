@@ -130,6 +130,29 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.5 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `f1ddf1a`
+- Acceptance evidence:
+  - manual: verified H1 renderer baseline in `crates/sem-cli/src/tui/render.rs`:
+    - footer cell helper model (`FooterCell`, `FooterParts`)
+    - `mode:` token migration to `m: <mode>`
+    - dedicated status slot rendering separated from cell rail
+    - list/detail footer builders using mode cell contract
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to Rust H1 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H1 scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (73 passed), including H1 footer tests:
+    - `list_footer_parts_include_mode_cell`
+    - `detail_footer_parts_include_cumulative_mode_cell`
+    - `detail_footer_loading_status_keeps_mode_cell_value`
+    - `footer_layout_widths_reserve_separator_for_status_slot`
+- Review run IDs + triage outcomes:
+  - `r_20260308195452782_e89fc013` (`generic-gemini`): `accept` H1 baseline completeness and mode/status contract alignment; `accept` spacing-separator defect between cell rail and status slot (fixed before commit); `defer` none; `reject` none.
+  - `r_20260308195556545_cc834395` (`generic-pi`): `accept` H1 scope completeness and test coverage; `defer` additional narrow-width long-status balancing policy to H2 hardening; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-footer-cell-layout/schema-proposal.md`
