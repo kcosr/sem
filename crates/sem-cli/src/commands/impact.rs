@@ -24,7 +24,10 @@ pub fn impact_command(opts: ImpactOptions) {
     } else if ext_filter.is_empty() {
         opts.file_paths
     } else {
-        opts.file_paths.into_iter().filter(|f| ext_filter.iter().any(|ext| f.ends_with(ext.as_str()))).collect()
+        opts.file_paths
+            .into_iter()
+            .filter(|f| ext_filter.iter().any(|ext| f.ends_with(ext.as_str())))
+            .collect()
     };
 
     let graph = EntityGraph::build(root, &file_paths, &registry);
@@ -82,11 +85,7 @@ pub fn impact_command(opts: ImpactOptions) {
             );
 
             if !deps.is_empty() {
-                println!(
-                    "\n  {} {}",
-                    "→".blue(),
-                    "depends on:".dimmed()
-                );
+                println!("\n  {} {}", "→".blue(), "depends on:".dimmed());
                 for dep in &deps {
                     println!(
                         "    {} {} {} ({})",
@@ -102,25 +101,20 @@ pub fn impact_command(opts: ImpactOptions) {
                 println!(
                     "\n  {} {}",
                     "✓".green().bold(),
-                    "No other entities are affected by changes to this entity."
-                        .dimmed()
+                    "No other entities are affected by changes to this entity.".dimmed()
                 );
             } else {
                 println!(
                     "\n  {} {} {}",
                     "!".red().bold(),
-                    format!("{} entities transitively affected:", impact.len())
-                        .red(),
+                    format!("{} entities transitively affected:", impact.len()).red(),
                     "".dimmed()
                 );
                 // Group by file
                 let mut by_file: std::collections::HashMap<&str, Vec<_>> =
                     std::collections::HashMap::new();
                 for imp in &impact {
-                    by_file
-                        .entry(imp.file_path.as_str())
-                        .or_default()
-                        .push(imp);
+                    by_file.entry(imp.file_path.as_str()).or_default().push(imp);
                 }
                 let mut files: Vec<_> = by_file.keys().copied().collect();
                 files.sort();

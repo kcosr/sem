@@ -10,9 +10,9 @@ fn range_label(change: &sem_core::model::change::SemanticChange) -> Option<Strin
         change.after_start_line,
         change.after_end_line,
     ) {
-        (Some(before_start), Some(before_end), Some(after_start), Some(after_end)) => {
-            Some(format!("[L{before_start}-L{before_end} -> L{after_start}-L{after_end}]"))
-        }
+        (Some(before_start), Some(before_end), Some(after_start), Some(after_end)) => Some(
+            format!("[L{before_start}-L{before_end} -> L{after_start}-L{after_end}]"),
+        ),
         (Some(before_start), Some(before_end), None, None) => {
             Some(format!("[L{before_start}-L{before_end}]"))
         }
@@ -39,42 +39,28 @@ pub fn format_terminal(result: &DiffResult) -> String {
     for (file_path, indices) in &by_file {
         let header = format!("─ {file_path} ");
         let pad_len = 55usize.saturating_sub(header.len());
-        lines.push(format!("┌{header}{}", "─".repeat(pad_len)).dimmed().to_string());
+        lines.push(
+            format!("┌{header}{}", "─".repeat(pad_len))
+                .dimmed()
+                .to_string(),
+        );
         lines.push("│".dimmed().to_string());
 
         for &idx in indices {
             let change = &result.changes[idx];
             let (symbol, tag) = match change.change_type {
-                ChangeType::Added => (
-                    "⊕".green().to_string(),
-                    "[added]".green().to_string(),
-                ),
+                ChangeType::Added => ("⊕".green().to_string(), "[added]".green().to_string()),
                 ChangeType::Modified => {
                     let is_cosmetic = change.structural_change == Some(false);
                     if is_cosmetic {
-                        (
-                            "~".dimmed().to_string(),
-                            "[cosmetic]".dimmed().to_string(),
-                        )
+                        ("~".dimmed().to_string(), "[cosmetic]".dimmed().to_string())
                     } else {
-                        (
-                            "∆".yellow().to_string(),
-                            "[modified]".yellow().to_string(),
-                        )
+                        ("∆".yellow().to_string(), "[modified]".yellow().to_string())
                     }
                 }
-                ChangeType::Deleted => (
-                    "⊖".red().to_string(),
-                    "[deleted]".red().to_string(),
-                ),
-                ChangeType::Moved => (
-                    "→".blue().to_string(),
-                    "[moved]".blue().to_string(),
-                ),
-                ChangeType::Renamed => (
-                    "↻".cyan().to_string(),
-                    "[renamed]".cyan().to_string(),
-                ),
+                ChangeType::Deleted => ("⊖".red().to_string(), "[deleted]".red().to_string()),
+                ChangeType::Moved => ("→".blue().to_string(), "[moved]".blue().to_string()),
+                ChangeType::Renamed => ("↻".cyan().to_string(), "[renamed]".cyan().to_string()),
             };
 
             let type_label = format!("{:<10}", change.entity_type);
@@ -95,8 +81,7 @@ pub fn format_terminal(result: &DiffResult) -> String {
 
             // Show content diff for modified properties
             if change.change_type == ChangeType::Modified {
-                if let (Some(before), Some(after)) =
-                    (&change.before_content, &change.after_content)
+                if let (Some(before), Some(after)) = (&change.before_content, &change.after_content)
                 {
                     let before_lines: Vec<&str> = before.lines().collect();
                     let after_lines: Vec<&str> = after.lines().collect();
@@ -121,10 +106,7 @@ pub fn format_terminal(result: &DiffResult) -> String {
             }
 
             // Show rename/move details
-            if matches!(
-                change.change_type,
-                ChangeType::Renamed | ChangeType::Moved
-            ) {
+            if matches!(change.change_type, ChangeType::Renamed | ChangeType::Moved) {
                 if let Some(ref old_path) = change.old_file_path {
                     lines.push(format!(
                         "{}    {}",
@@ -153,7 +135,11 @@ pub fn format_terminal(result: &DiffResult) -> String {
         );
     }
     if result.deleted_count > 0 {
-        parts.push(format!("{} deleted", result.deleted_count).red().to_string());
+        parts.push(
+            format!("{} deleted", result.deleted_count)
+                .red()
+                .to_string(),
+        );
     }
     if result.moved_count > 0 {
         parts.push(format!("{} moved", result.moved_count).blue().to_string());

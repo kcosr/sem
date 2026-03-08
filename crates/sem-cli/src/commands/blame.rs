@@ -30,7 +30,12 @@ pub fn blame_command(opts: BlameOptions) {
     let content = match std::fs::read_to_string(&full_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{} Cannot read {}: {}", "error:".red().bold(), opts.file_path, e);
+            eprintln!(
+                "{} Cannot read {}: {}",
+                "error:".red().bold(),
+                opts.file_path,
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -49,7 +54,11 @@ pub fn blame_command(opts: BlameOptions) {
 
     let entities = plugin.extract_entities(&content, &opts.file_path);
     if entities.is_empty() {
-        eprintln!("{} No entities found in {}", "warning:".yellow().bold(), opts.file_path);
+        eprintln!(
+            "{} No entities found in {}",
+            "warning:".yellow().bold(),
+            opts.file_path
+        );
         return;
     }
 
@@ -74,7 +83,12 @@ pub fn blame_command(opts: BlameOptions) {
     let blame: git2::Blame = match repo.blame_file(Path::new(&relative_path), None) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("{} Cannot blame {}: {}", "error:".red().bold(), opts.file_path, e);
+            eprintln!(
+                "{} Cannot blame {}: {}",
+                "error:".red().bold(),
+                opts.file_path,
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -142,15 +156,16 @@ pub fn blame_command(opts: BlameOptions) {
             .collect();
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        println!(
-            "{}",
-            format!("┌─ {} ", opts.file_path).bold()
-        );
+        println!("{}", format!("┌─ {} ", opts.file_path).bold());
         println!("│");
 
         // Group by parent (top-level vs nested)
         let max_name_len = results.iter().map(|r| r.name.len()).max().unwrap_or(10);
-        let max_type_len = results.iter().map(|r| r.entity_type.len()).max().unwrap_or(8);
+        let max_type_len = results
+            .iter()
+            .map(|r| r.entity_type.len())
+            .max()
+            .unwrap_or(8);
 
         for r in &results {
             let sha_short = if r.commit_sha.len() >= 8 {

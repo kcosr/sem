@@ -84,12 +84,27 @@ mod tests {
         };
 
         let value = serde_json::to_value(change).expect("change should serialize");
-        assert_eq!(value.get("beforeStartLine").and_then(|v| v.as_u64()), Some(10));
-        assert_eq!(value.get("beforeEndLine").and_then(|v| v.as_u64()), Some(15));
-        assert_eq!(value.get("afterStartLine").and_then(|v| v.as_u64()), Some(11));
+        assert_eq!(
+            value.get("beforeStartLine").and_then(|v| v.as_u64()),
+            Some(10)
+        );
+        assert_eq!(
+            value.get("beforeEndLine").and_then(|v| v.as_u64()),
+            Some(15)
+        );
+        assert_eq!(
+            value.get("afterStartLine").and_then(|v| v.as_u64()),
+            Some(11)
+        );
         assert_eq!(value.get("afterEndLine").and_then(|v| v.as_u64()), Some(17));
-        assert_eq!(value.get("timestamp").and_then(|v| v.as_str()), Some("2026-03-08T00:00:00Z"));
-        assert_eq!(value.get("structuralChange").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            value.get("timestamp").and_then(|v| v.as_str()),
+            Some("2026-03-08T00:00:00Z")
+        );
+        assert_eq!(
+            value.get("structuralChange").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert!(value.get("before_start_line").is_none());
     }
 
@@ -120,7 +135,10 @@ mod tests {
         assert!(value.get("beforeEndLine").is_none());
         assert!(value.get("timestamp").is_none());
         assert!(value.get("structuralChange").is_none());
-        assert_eq!(value.get("afterStartLine").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(
+            value.get("afterStartLine").and_then(|v| v.as_u64()),
+            Some(1)
+        );
         assert_eq!(value.get("afterEndLine").and_then(|v| v.as_u64()), Some(1));
     }
 }

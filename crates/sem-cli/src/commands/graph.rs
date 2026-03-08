@@ -29,7 +29,10 @@ pub fn graph_command(opts: GraphOptions) {
     } else if ext_filter.is_empty() {
         opts.file_paths
     } else {
-        opts.file_paths.into_iter().filter(|f| ext_filter.iter().any(|ext| f.ends_with(ext.as_str()))).collect()
+        opts.file_paths
+            .into_iter()
+            .filter(|f| ext_filter.iter().any(|ext| f.ends_with(ext.as_str())))
+            .collect()
     };
 
     let graph = EntityGraph::build(root, &file_paths, &registry);
@@ -50,7 +53,11 @@ fn print_terminal(graph: &EntityGraph, entity_filter: Option<&str>) {
             .collect();
 
         if matching.is_empty() {
-            eprintln!("{} Entity '{}' not found", "error:".red().bold(), entity_name);
+            eprintln!(
+                "{} Entity '{}' not found",
+                "error:".red().bold(),
+                entity_name
+            );
             return;
         }
 
@@ -234,17 +241,31 @@ fn ref_symbol(ref_type: &RefType) -> colored::ColoredString {
 
 /// Normalize extension strings: ensure each starts with '.'
 pub fn normalize_exts(exts: &[String]) -> Vec<String> {
-    exts.iter().map(|e| {
-        if e.starts_with('.') { e.clone() } else { format!(".{}", e) }
-    }).collect()
+    exts.iter()
+        .map(|e| {
+            if e.starts_with('.') {
+                e.clone()
+            } else {
+                format!(".{}", e)
+            }
+        })
+        .collect()
 }
 
 /// Find all supported files in the repo (public for use by other commands).
-pub fn find_supported_files_public(root: &Path, registry: &sem_core::parser::registry::ParserRegistry, ext_filter: &[String]) -> Vec<String> {
+pub fn find_supported_files_public(
+    root: &Path,
+    registry: &sem_core::parser::registry::ParserRegistry,
+    ext_filter: &[String],
+) -> Vec<String> {
     find_supported_files(root, registry, ext_filter)
 }
 
-fn find_supported_files(root: &Path, registry: &sem_core::parser::registry::ParserRegistry, ext_filter: &[String]) -> Vec<String> {
+fn find_supported_files(
+    root: &Path,
+    registry: &sem_core::parser::registry::ParserRegistry,
+    ext_filter: &[String],
+) -> Vec<String> {
     let mut files = Vec::new();
     walk_dir(root, root, registry, ext_filter, &mut files);
     files.sort();
@@ -268,7 +289,12 @@ fn walk_dir(
 
         // Skip hidden dirs and common non-code dirs
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" || name == "venv" {
+            if name.starts_with('.')
+                || name == "node_modules"
+                || name == "target"
+                || name == "__pycache__"
+                || name == "venv"
+            {
                 continue;
             }
         }
@@ -278,7 +304,9 @@ fn walk_dir(
         } else if let Ok(rel) = path.strip_prefix(root) {
             let rel_str = rel.to_string_lossy().to_string();
             // If ext filter is set, only include matching extensions
-            if !ext_filter.is_empty() && !ext_filter.iter().any(|ext| rel_str.ends_with(ext.as_str())) {
+            if !ext_filter.is_empty()
+                && !ext_filter.iter().any(|ext| rel_str.ends_with(ext.as_str()))
+            {
                 continue;
             }
             if registry.get_plugin(&rel_str).is_some() {

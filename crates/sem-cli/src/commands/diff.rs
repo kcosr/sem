@@ -89,8 +89,14 @@ pub fn diff_command(opts: DiffOptions) {
             if input.from_stdin { "stdin" } else { "git" },
             input.input_ms
         );
-        eprintln!("\x1b[2m  registry init        {:>8.2}ms\x1b[0m", compute.registry_ms);
-        eprintln!("\x1b[2m  parse + match        {:>8.2}ms\x1b[0m", compute.parse_diff_ms);
+        eprintln!(
+            "\x1b[2m  registry init        {:>8.2}ms\x1b[0m",
+            compute.registry_ms
+        );
+        eprintln!(
+            "\x1b[2m  parse + match        {:>8.2}ms\x1b[0m",
+            compute.parse_diff_ms
+        );
         eprintln!("\x1b[2m  format output        {:>8.2}ms\x1b[0m", format_ms);
         eprintln!("\x1b[2m  ─────────────────────────────────\x1b[0m");
         eprintln!("\x1b[2m  total                {:>8.2}ms\x1b[0m", total_ms);
@@ -236,7 +242,8 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(result, opts.diff_view).map_err(|error| format!("failed to start TUI: {error}"))?;
+        tui::run_tui(result, opts.diff_view)
+            .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
 
@@ -287,7 +294,8 @@ mod tests {
           }
         ]"#;
 
-        let phase = collect_diff_input_with_stdin(&options, Some(input)).expect("stdin mode should parse");
+        let phase =
+            collect_diff_input_with_stdin(&options, Some(input)).expect("stdin mode should parse");
         assert!(phase.from_stdin);
         assert_eq!(phase.file_changes.len(), 1);
         assert_eq!(phase.file_changes[0].file_path, "src/a.ts");
@@ -313,7 +321,8 @@ mod tests {
             after_path.to_string_lossy().to_string(),
         ];
 
-        let phase = collect_diff_input_with_stdin(&options, None).expect("two-file mode should parse");
+        let phase =
+            collect_diff_input_with_stdin(&options, None).expect("two-file mode should parse");
         assert!(!phase.from_stdin);
         assert_eq!(phase.file_changes.len(), 1);
         assert_eq!(
