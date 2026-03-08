@@ -17,6 +17,7 @@
 - Non-fatal boundary/unsupported/error status hints with previous snapshot retention on load failure.
 - Diff TUI reviewed-state controls: `Space` to toggle reviewed on focused/opened entity and `r` to cycle filter (`all`/`unreviewed`/`reviewed`).
 - Local review-state persistence at `.sem/tui-review-state.json` with per-repo filter preference and reviewed carryover based on identity + target hash.
+- Diff TUI entity-context toggle: `e` switches detail rendering between `hunk` context and full `entity` context.
 
 ### Changed
 - `sem-core` `SemanticChange` now includes optional line-range metadata:
@@ -29,6 +30,8 @@
   - explicit `--from/--to` => `cumulative`
   - implicit/latest and `--commit` => `pairwise`
 - TUI list/detail footer cells now include review filter state (`r: <all|unreviewed|reviewed>`) alongside step mode (`m: <pairwise|cumulative>`).
+- TUI list/detail footer cells now include entity-context state (`e: <hunk|entity>`) with shared `m | r | e` ordering.
+- TUI detail rendering now supports full-entity mode changed-region anchors for deterministic `n/p` traversal in unified and side-by-side views.
 - Filtered TUI list rendering now hides file headers with zero visible entities and shows an explicit no-match row when filter output is empty.
 
 ### Testing
@@ -37,3 +40,4 @@
 - Added sem-cli commit-navigation tests for lineage stepping boundaries (including root), rapid request coalescing (`[ [ [ ] ]`), stale-result rejection, unsupported-mode inert behavior, detail-mode empty snapshot stability, and quit-during-load behavior.
 - Added sem-cli unified-stepping tests for mode comparator selection, startup defaults/`--step-mode` (explicit range, commit, staged, and implicit/latest), pseudo-endpoint range bootstrap, startup refresh loading, JSON range compatibility for `HEAD..WORKING`, and `INDEX`/`WORKING` empty<->populated transition hardening.
 - Added sem-cli review-state coverage for filtered navigation/no-match rendering, detail-mode review toggle/filter behavior, reviewed marker rendering, file-header suppression under filters, and carryover/non-carryover behavior across snapshot reloads.
+- Added sem-cli H3 hardening coverage for entity-context mode: identical-content empty-anchor boundary no-op behavior, non-zero index/scroll reset on `e` toggles, and footer/help render assertions for `e: hunk|entity`.

@@ -47,6 +47,7 @@ sem impact validateToken --file-exts .py
 - `Enter` / `Esc`: open and close entity detail
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
+- `e`: toggle `hunk` / `entity` detail context mode
 - `Tab`: unified vs side-by-side toggle
 - `n/p`: hunk navigation
 - `PageUp/PageDown`: page scrolling in detail mode

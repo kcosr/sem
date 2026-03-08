@@ -267,6 +267,29 @@ Gate:
 - Notes:
   - both reviews completed with stream terminal events (`result.completed`).
 
+### 9.7 H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): PENDING (to be recorded after H3 milestone commit)
+- Acceptance evidence:
+  - `cargo test -p sem-cli && cargo test -p sem-core` (run from `crates/`) => pass (`121` sem-cli tests, `41` sem-core tests, `0` failures).
+  - footer UX: `render.rs` now emits `e: <hunk|entity>` in list/detail footer cells with shared ordering `m | r | e`.
+  - help text: overlay includes exact line `e toggle hunk/entity context` and list/detail overlay tests assert visibility.
+  - docs/changelog: updated `crates/README.md` keybindings and `CHANGELOG.md` feature/testing notes for entity-context toggle and hardening coverage.
+  - hardening tests: added draw-level footer visibility assertion for `e: entity` and realistic-width footer contention guard.
+- Review run IDs + triage outcomes:
+  - `r_20260308212204531_fc9c7aad`:
+    - `accept`: added explicit H3 Section 9 evidence entry and final triage logging.
+    - `defer`: none.
+    - `reject`: none.
+  - `r_20260308212248713_cf45ac6d`:
+    - `accept`: added detail-mode help-overlay assertion, draw-level `e: entity` footer assertion, realistic-width footer layout test, and changelog testing specificity update.
+    - `defer`: wording cleanup for historical \"optional `r`\" phrase in verification matrix.
+    - `reject`: force controls/help wording to match exactly (`e context` in footer controls remains intentional for compactness).
+- Go/No-Go: GO
+- Notes:
+  - both reviews completed with stream terminal events (`result.completed`).
+  - `docs/reference/architecture.md` and `docs/implementation/implementation-plan.md` do not exist in this repository; finalization docs were applied to available canonical docs (`crates/README.md`, `CHANGELOG.md`, and this phase ledger).
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline and ordering contract).

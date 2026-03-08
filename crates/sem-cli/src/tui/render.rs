@@ -278,7 +278,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, r cycle-filter, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, r cycle-filter, e context, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -288,6 +288,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
         cells: vec![
             FooterCell::new('m', app.step_mode().as_token()),
             FooterCell::new('r', app.review_filter().as_token()),
+            FooterCell::new('e', app.entity_context_mode().as_token()),
         ],
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
@@ -295,7 +296,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, Space toggle-reviewed, r cycle-filter, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, Space toggle-reviewed, r cycle-filter, e context, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -309,6 +310,7 @@ fn detail_footer_parts(app: &AppState) -> FooterParts {
         cells: vec![
             FooterCell::new('m', app.step_mode().as_token()),
             FooterCell::new('r', app.review_filter().as_token()),
+            FooterCell::new('e', app.entity_context_mode().as_token()),
         ],
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
@@ -469,6 +471,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  r cycle review filter (all/unreviewed/reviewed)"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
+        Line::from("  e toggle hunk/entity context"),
         Line::from("  stepping is disabled for stdin/two-file mode"),
         Line::from("  Enter open detail"),
         Line::from("  g/G jump top/bottom"),
@@ -477,6 +480,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  Space toggle reviewed on opened entity"),
         Line::from("  r cycle review filter"),
+        Line::from("  e toggle hunk/entity context"),
         Line::from("  Esc back to list"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
@@ -1319,6 +1323,31 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with help overlay");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("e toggle hunk/entity context"),
+            "expected help overlay toggle line, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_detail_mode_help_overlay_includes_entity_toggle_line() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with detail help overlay");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("e toggle hunk/entity context"),
+            "expected help overlay toggle line in detail mode, got:\n{rendered}"
+        );
     }
 
     #[test]
@@ -1480,10 +1509,32 @@ mod tests {
     }
 
     #[test]
+    fn draw_detail_mode_shows_entity_footer_cell_after_toggle() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed in detail mode after entity toggle");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("e: entity"),
+            "expected entity footer cell in rendered output, got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn list_footer_parts_include_mode_cell() {
         let app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
         let footer = list_footer_parts(&app);
-        assert_eq!(render_footer_cells(&footer.cells), "m: pairwise | r: all");
+        assert_eq!(
+            render_footer_cells(&footer.cells),
+            "m: pairwise | r: all | e: hunk"
+        );
         assert_eq!(footer.status, None);
     }
 
@@ -1529,7 +1580,10 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let footer = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&footer.cells), "m: cumulative | r: all");
+        assert_eq!(
+            render_footer_cells(&footer.cells),
+            "m: cumulative | r: all | e: hunk"
+        );
     }
 
     #[test]
@@ -1538,12 +1592,43 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let baseline = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&baseline.cells), "m: pairwise | r: all");
+        assert_eq!(
+            render_footer_cells(&baseline.cells),
+            "m: pairwise | r: all | e: hunk"
+        );
 
         app.set_commit_loading(true);
         let loading = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&loading.cells), "m: pairwise | r: all");
+        assert_eq!(
+            render_footer_cells(&loading.cells),
+            "m: pairwise | r: all | e: hunk"
+        );
         assert_eq!(loading.status.as_deref(), Some("Loading..."));
+    }
+
+    #[test]
+    fn list_footer_parts_show_entity_mode_cell_value_after_toggle() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        let footer = list_footer_parts(&app);
+        assert_eq!(
+            render_footer_cells(&footer.cells),
+            "m: pairwise | r: all | e: entity"
+        );
+    }
+
+    #[test]
+    fn detail_footer_parts_show_entity_mode_cell_value_after_toggle() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        let footer = detail_footer_parts(&app);
+        assert_eq!(
+            render_footer_cells(&footer.cells),
+            "m: pairwise | r: all | e: entity"
+        );
     }
 
     #[test]
@@ -1575,6 +1660,18 @@ mod tests {
         assert_eq!(cell_width, 5);
         assert_eq!(controls_width, 0);
         assert_eq!(status_width, 0);
+    }
+
+    #[test]
+    fn footer_layout_widths_preserve_three_cells_at_standard_width() {
+        let cell_text = "m: cumulative | r: unreviewed | e: entity";
+        let (controls_width, cell_width, status_width) =
+            footer_layout_widths(80, cell_text, Some("Loading..."));
+
+        assert_eq!(cell_width, cell_text.chars().count());
+        assert!(controls_width > 0);
+        assert!(status_width > 0);
+        assert_eq!(controls_width + cell_width + status_width, 80);
     }
 
     #[test]
