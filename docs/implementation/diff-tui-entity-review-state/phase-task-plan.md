@@ -272,6 +272,30 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.7 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `d8066cf`
+- Acceptance evidence:
+  - manual: verified H2 interaction/render scope landed and remains deterministic in list/detail modes:
+    - `Space` toggle wired in list + detail mode handlers
+    - `r` filter cycle wired in list + detail mode handlers
+    - filtered projection drives list rows, file-header suppression, and no-match row rendering
+    - list/detail navigation skips hidden rows and no-ops when no visible entities remain
+    - footer/help text updated with `r: <state>` cell while preserving `m` cell ordering contract
+  - `cargo fmt -p sem-cli` (run in `crates/`) => PASS.
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (99 passed), including H2-focused coverage:
+    - `tui::app::tests::{filtered_navigation_skips_hidden_rows_in_list_mode, toggle_under_active_filter_can_result_in_no_match_state, detail_left_right_navigation_respects_active_filter_visibility, detail_mode_space_toggles_reviewed_state_for_opened_entity, detail_mode_filter_cycle_retargets_when_focused_entity_becomes_hidden}`
+    - `tui::render::tests::{draw_list_mode_shows_no_match_row_when_filter_hides_all_entities, draw_list_mode_shows_reviewed_marker_for_non_selected_reviewed_rows, draw_list_mode_hides_file_headers_without_visible_entities}`
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (pre-existing missing Node/module typings and dependency issues unrelated to Rust H2 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H2 scope).
+- Review run IDs + triage outcomes:
+  - `r_20260308204354661_5140108c` (`generic-gemini`): `accept` additional H2 coverage for reviewed-marker rendering, partial file-header suppression, and explicit detail-mode toggle/filter behavior (applied in H2 tests); `defer` list projection caching/perf concerns and optional detail-view reviewed indicator to future hardening/UX iteration; `reject` none.
+  - `r_20260308204459814_0a0cbe1e` (`generic-pi`): `accept` additional H2 coverage for reviewed-marker render assertions and detail-mode behavior when filter visibility changes (applied in H2 tests); `defer` non-blocking selection-overflow UX nuance and visible-index allocation optimization to future hardening; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline with `m` cell and cell-order contract).
