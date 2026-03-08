@@ -226,8 +226,8 @@ impl AppState {
             CommitLoadStatus::Loaded => {
                 if let Some(snapshot) = response.snapshot {
                     self.apply_commit_snapshot(snapshot);
-                    self.commit_status_message = Some("Step snapshot loaded".to_string());
                 }
+                self.commit_status_message = None;
                 self.commit_loading = false;
             }
             CommitLoadStatus::LoadFailed => {
@@ -967,7 +967,7 @@ mod tests {
             app.commit_cursor().map(|cursor| cursor.sha.as_str()),
             Some("abc1234")
         );
-        assert_eq!(app.commit_status_message(), Some("Step snapshot loaded"));
+        assert_eq!(app.commit_status_message(), None);
     }
 
     #[test]
