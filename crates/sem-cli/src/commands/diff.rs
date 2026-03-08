@@ -49,6 +49,21 @@ pub enum TuiSourceMode {
     Unsupported,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum StepMode {
+    Pairwise,
+    Cumulative,
+}
+
+impl StepMode {
+    pub fn as_token(self) -> &'static str {
+        match self {
+            StepMode::Pairwise => "pairwise",
+            StepMode::Cumulative => "cumulative",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepAction {
     Older,
@@ -108,6 +123,15 @@ pub struct TuiRangeContext {
 pub struct StepSnapshot {
     pub cursor: StepCursor,
     pub result: DiffResult,
+    pub mode: StepMode,
+    pub base_endpoint_id: Option<String>,
+    pub comparison: StepComparison,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepComparison {
+    pub from_endpoint_id: String,
+    pub to_endpoint_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +141,18 @@ pub struct StepRequest {
     pub current_endpoint_id: String,
     pub current_index: usize,
     pub source_mode: TuiSourceMode,
+    pub mode: StepMode,
+    pub base_endpoint_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StepRefreshRequest {
+    pub request_id: u64,
+    pub current_endpoint_id: String,
+    pub current_index: usize,
+    pub source_mode: TuiSourceMode,
+    pub mode: StepMode,
+    pub base_endpoint_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +178,7 @@ pub type CommitCursor = StepCursor;
 pub type CommitNavigationContext = StepNavigationContext;
 pub type CommitSnapshot = StepSnapshot;
 pub type CommitStepRequest = StepRequest;
+pub type CommitRefreshRequest = StepRefreshRequest;
 pub type CommitLoadStatus = StepLoadStatus;
 pub type CommitStepResponse = StepResponse;
 
@@ -344,12 +381,11 @@ fn compute_diff_result(file_changes: &[FileChange]) -> ComputePhase {
 fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Option<String>, String> {
     if opts.tui {
         let commit_navigation = build_commit_navigation_context(opts)?;
-        let range_context = build_tui_range_context(opts)?;
         if result.changes.is_empty() && commit_navigation.is_none() {
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(result, opts.diff_view, commit_navigation, range_context)
+        tui::run_tui(result, opts.diff_view, commit_navigation)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -513,50 +549,17 @@ pub fn process_step_request(
         }
     };
 
-    let target_index = context
-        .endpoint_index
-        .get(&target_endpoint_id)
-        .copied()
-        .unwrap_or_default();
-    let from_endpoint = if target_index == 0 {
-        context
-            .endpoints
-            .get(target_index)
-            .expect("target endpoint index must be valid")
-    } else {
-        context
-            .endpoints
-            .get(target_index - 1)
-            .expect("pairwise source endpoint index must be valid")
-    };
-    let to_endpoint = context
-        .endpoints
-        .get(target_index)
-        .expect("target endpoint index must be valid");
-
-    let result = match load_endpoint_diff_result(
-        &context.cwd,
-        from_endpoint,
-        to_endpoint,
-        &context.file_exts,
+    match load_step_snapshot(
+        &git,
+        context,
+        &target_endpoint_id,
+        request.mode,
+        request.base_endpoint_id.as_deref(),
     ) {
-        Ok(result) => result,
-        Err(error) => {
-            return StepResponse {
-                applied_request_id: request.request_id,
-                status: StepLoadStatus::LoadFailed,
-                snapshot: None,
-                error: Some(error),
-                retain_previous_snapshot: true,
-            };
-        }
-    };
-
-    match build_step_cursor(&git, context, &target_endpoint_id) {
-        Ok(cursor) => StepResponse {
+        Ok(snapshot) => StepResponse {
             applied_request_id: request.request_id,
             status: StepLoadStatus::Loaded,
-            snapshot: Some(StepSnapshot { cursor, result }),
+            snapshot: Some(snapshot),
             error: None,
             retain_previous_snapshot: false,
         },
@@ -575,6 +578,104 @@ pub fn process_commit_step_request(
     request: &StepRequest,
 ) -> StepResponse {
     process_step_request(context, request)
+}
+
+pub fn process_step_refresh_request(
+    context: &StepNavigationContext,
+    request: &StepRefreshRequest,
+) -> StepResponse {
+    let context_supported = context.source_mode == TuiSourceMode::Unified
+        || context.source_mode == TuiSourceMode::Commit;
+    let request_supported = request.source_mode == TuiSourceMode::Unified
+        || request.source_mode == TuiSourceMode::Commit;
+    if !context_supported || !request_supported {
+        return StepResponse {
+            applied_request_id: request.request_id,
+            status: StepLoadStatus::UnsupportedMode,
+            snapshot: None,
+            error: None,
+            retain_previous_snapshot: true,
+        };
+    }
+
+    let git = match GitBridge::open(Path::new(&context.cwd)) {
+        Ok(git) => git,
+        Err(error) => {
+            return StepResponse {
+                applied_request_id: request.request_id,
+                status: StepLoadStatus::LoadFailed,
+                snapshot: None,
+                error: Some(error.to_string()),
+                retain_previous_snapshot: true,
+            };
+        }
+    };
+
+    let resolved_index = context
+        .endpoint_index
+        .get(&request.current_endpoint_id)
+        .copied()
+        .or_else(|| {
+            context
+                .endpoints
+                .get(request.current_index)
+                .map(|_| request.current_index)
+        });
+    let Some(index) = resolved_index else {
+        return StepResponse {
+            applied_request_id: request.request_id,
+            status: StepLoadStatus::LoadFailed,
+            snapshot: None,
+            error: Some(format!(
+                "current endpoint {} not found in active path",
+                request.current_endpoint_id
+            )),
+            retain_previous_snapshot: true,
+        };
+    };
+
+    if index != request.current_index {
+        return StepResponse {
+            applied_request_id: request.request_id,
+            status: StepLoadStatus::LoadFailed,
+            snapshot: None,
+            error: Some(format!(
+                "cursor index mismatch for endpoint {}: request={}, resolved={index}",
+                request.current_endpoint_id, request.current_index
+            )),
+            retain_previous_snapshot: true,
+        };
+    }
+
+    match load_step_snapshot(
+        &git,
+        context,
+        &request.current_endpoint_id,
+        request.mode,
+        request.base_endpoint_id.as_deref(),
+    ) {
+        Ok(snapshot) => StepResponse {
+            applied_request_id: request.request_id,
+            status: StepLoadStatus::Loaded,
+            snapshot: Some(snapshot),
+            error: None,
+            retain_previous_snapshot: false,
+        },
+        Err(error) => StepResponse {
+            applied_request_id: request.request_id,
+            status: StepLoadStatus::LoadFailed,
+            snapshot: None,
+            error: Some(error),
+            retain_previous_snapshot: true,
+        },
+    }
+}
+
+pub fn process_commit_refresh_request(
+    context: &StepNavigationContext,
+    request: &StepRefreshRequest,
+) -> StepResponse {
+    process_step_refresh_request(context, request)
 }
 
 fn resolve_step_target_endpoint_id(
@@ -629,6 +730,75 @@ fn resolve_step_target_endpoint_id(
             }
         }
     }
+}
+
+fn resolve_step_comparison<'a>(
+    context: &'a StepNavigationContext,
+    target_index: usize,
+    mode: StepMode,
+    base_endpoint_id: Option<&str>,
+) -> Result<(&'a StepEndpoint, &'a StepEndpoint, Option<String>), String> {
+    let to_endpoint = context
+        .endpoints
+        .get(target_index)
+        .ok_or_else(|| format!("target endpoint index {target_index} out of bounds"))?;
+    match mode {
+        StepMode::Pairwise => {
+            let from_endpoint = if target_index == 0 {
+                to_endpoint
+            } else {
+                context
+                    .endpoints
+                    .get(target_index - 1)
+                    .ok_or_else(|| format!("pairwise source endpoint {target_index} missing"))?
+            };
+            Ok((from_endpoint, to_endpoint, None))
+        }
+        StepMode::Cumulative => {
+            let resolved_base_id = base_endpoint_id
+                .map(str::to_string)
+                .unwrap_or_else(|| to_endpoint.endpoint_id.clone());
+            let base_index = context
+                .endpoint_index
+                .get(&resolved_base_id)
+                .copied()
+                .ok_or_else(|| format!("cumulative base endpoint {resolved_base_id} not found"))?;
+            let from_endpoint = context
+                .endpoints
+                .get(base_index)
+                .ok_or_else(|| format!("cumulative base index {base_index} out of bounds"))?;
+            Ok((from_endpoint, to_endpoint, Some(resolved_base_id)))
+        }
+    }
+}
+
+fn load_step_snapshot(
+    git: &GitBridge,
+    context: &StepNavigationContext,
+    target_endpoint_id: &str,
+    mode: StepMode,
+    base_endpoint_id: Option<&str>,
+) -> Result<StepSnapshot, String> {
+    let target_index = context
+        .endpoint_index
+        .get(target_endpoint_id)
+        .copied()
+        .ok_or_else(|| format!("target endpoint {target_endpoint_id} missing in active path"))?;
+    let (from_endpoint, to_endpoint, effective_base_endpoint_id) =
+        resolve_step_comparison(context, target_index, mode, base_endpoint_id)?;
+    let result =
+        load_endpoint_diff_result(&context.cwd, from_endpoint, to_endpoint, &context.file_exts)?;
+    let cursor = build_step_cursor(git, context, target_endpoint_id)?;
+    Ok(StepSnapshot {
+        cursor,
+        result,
+        mode,
+        base_endpoint_id: effective_base_endpoint_id,
+        comparison: StepComparison {
+            from_endpoint_id: from_endpoint.endpoint_id.clone(),
+            to_endpoint_id: to_endpoint.endpoint_id.clone(),
+        },
+    })
 }
 
 fn build_step_cursor(
@@ -1211,6 +1381,8 @@ mod tests {
                 current_endpoint_id: middle_endpoint_id.clone(),
                 current_index: 1,
                 source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(older.status, CommitLoadStatus::Loaded);
@@ -1230,6 +1402,8 @@ mod tests {
                 current_endpoint_id: middle_endpoint_id,
                 current_index: 1,
                 source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(newer.status, CommitLoadStatus::Loaded);
@@ -1249,6 +1423,8 @@ mod tests {
                 current_endpoint_id: commit_endpoint_id(&lineage[0]),
                 current_index: 2,
                 source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(boundary.status, CommitLoadStatus::BoundaryNoop);
@@ -1263,6 +1439,8 @@ mod tests {
                 ),
                 current_index: 0,
                 source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(root_boundary.status, CommitLoadStatus::BoundaryNoop);
@@ -1291,6 +1469,8 @@ mod tests {
                 current_endpoint_id: "deadbeef".to_string(),
                 current_index: 0,
                 source_mode: TuiSourceMode::Unsupported,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(response.status, CommitLoadStatus::UnsupportedMode);
@@ -1483,6 +1663,8 @@ mod tests {
                 current_endpoint_id: "commit:b".to_string(),
                 current_index: 0,
                 source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
             },
         );
         assert_eq!(response.status, StepLoadStatus::LoadFailed);
@@ -1492,6 +1674,159 @@ mod tests {
             error.contains("cursor index mismatch"),
             "unexpected error: {error}"
         );
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn resolve_step_comparison_uses_previous_current_for_pairwise() {
+        let context = StepNavigationContext {
+            cwd: ".".to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Unified,
+            endpoints: vec![
+                StepEndpoint {
+                    endpoint_id: "commit:a".to_string(),
+                    display_ref: Some("HEAD~1".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "a".to_string(),
+                    },
+                },
+                StepEndpoint {
+                    endpoint_id: "commit:b".to_string(),
+                    display_ref: Some("HEAD".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "b".to_string(),
+                    },
+                },
+            ],
+            endpoint_index: HashMap::from([
+                ("commit:a".to_string(), 0usize),
+                ("commit:b".to_string(), 1usize),
+            ]),
+        };
+
+        let (from, to, base) = resolve_step_comparison(&context, 0, StepMode::Pairwise, None)
+            .expect("pairwise lower-bound comparison should resolve");
+        assert_eq!(from.endpoint_id, "commit:a");
+        assert_eq!(to.endpoint_id, "commit:a");
+        assert_eq!(base, None);
+
+        let (from, to, base) = resolve_step_comparison(&context, 1, StepMode::Pairwise, None)
+            .expect("pairwise non-boundary comparison should resolve");
+        assert_eq!(from.endpoint_id, "commit:a");
+        assert_eq!(to.endpoint_id, "commit:b");
+        assert_eq!(base, None);
+    }
+
+    #[test]
+    fn resolve_step_comparison_uses_base_cursor_for_cumulative() {
+        let context = StepNavigationContext {
+            cwd: ".".to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Unified,
+            endpoints: vec![
+                StepEndpoint {
+                    endpoint_id: "commit:a".to_string(),
+                    display_ref: Some("HEAD~2".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "a".to_string(),
+                    },
+                },
+                StepEndpoint {
+                    endpoint_id: "commit:b".to_string(),
+                    display_ref: Some("HEAD~1".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "b".to_string(),
+                    },
+                },
+                StepEndpoint {
+                    endpoint_id: "commit:c".to_string(),
+                    display_ref: Some("HEAD".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "c".to_string(),
+                    },
+                },
+            ],
+            endpoint_index: HashMap::from([
+                ("commit:a".to_string(), 0usize),
+                ("commit:b".to_string(), 1usize),
+                ("commit:c".to_string(), 2usize),
+            ]),
+        };
+
+        let (from, to, base) =
+            resolve_step_comparison(&context, 2, StepMode::Cumulative, Some("commit:a"))
+                .expect("cumulative comparison should resolve");
+        assert_eq!(from.endpoint_id, "commit:a");
+        assert_eq!(to.endpoint_id, "commit:c");
+        assert_eq!(base, Some("commit:a".to_string()));
+
+        let (from, to, base) = resolve_step_comparison(&context, 2, StepMode::Cumulative, None)
+            .expect("null cumulative base should re-anchor to cursor endpoint");
+        assert_eq!(from.endpoint_id, "commit:c");
+        assert_eq!(to.endpoint_id, "commit:c");
+        assert_eq!(base, Some("commit:c".to_string()));
+    }
+
+    #[test]
+    fn process_step_refresh_request_loads_snapshot_for_current_cursor() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-step-refresh-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+        let endpoints: Vec<StepEndpoint> = lineage
+            .iter()
+            .rev()
+            .map(|sha| StepEndpoint {
+                endpoint_id: commit_endpoint_id(sha),
+                display_ref: None,
+                kind: StepEndpointKind::Commit { sha: sha.clone() },
+            })
+            .collect();
+        let endpoint_index: HashMap<String, usize> = endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
+            .collect();
+        let context = CommitNavigationContext {
+            cwd: base.to_string_lossy().to_string(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+        };
+
+        let middle_endpoint_id = commit_endpoint_id(&lineage[1]);
+        let response = process_step_refresh_request(
+            &context,
+            &StepRefreshRequest {
+                request_id: 101,
+                current_endpoint_id: middle_endpoint_id,
+                current_index: 1,
+                source_mode: TuiSourceMode::Commit,
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
+            },
+        );
+
+        assert_eq!(response.status, StepLoadStatus::Loaded);
+        let snapshot = response
+            .snapshot
+            .expect("refresh request should return loaded snapshot");
+        assert_eq!(snapshot.cursor.index, 1);
+        assert_eq!(
+            snapshot.comparison.from_endpoint_id,
+            commit_endpoint_id(&lineage[2])
+        );
+        assert_eq!(
+            snapshot.comparison.to_endpoint_id,
+            commit_endpoint_id(&lineage[1])
+        );
+        assert_eq!(snapshot.mode, StepMode::Pairwise);
+        assert_eq!(snapshot.base_endpoint_id, None);
 
         let _ = std::fs::remove_dir_all(base);
     }

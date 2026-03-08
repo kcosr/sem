@@ -2,10 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sem_core::model::change::SemanticChange;
 use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
+use std::collections::HashMap;
 
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
-    TuiRangeContext, TuiSourceMode,
+    StepComparison, StepEndpoint, StepMode, TuiSourceMode,
 };
 
 use super::detail::{render_change, LineKind, RenderedDiff, SideBySideLine};
@@ -43,11 +44,21 @@ pub struct AppState {
     viewport_width: u16,
     viewport_height: u16,
     commit_source_mode: TuiSourceMode,
+    navigation_endpoints: Vec<StepEndpoint>,
+    navigation_endpoint_index: HashMap<String, usize>,
     commit_cursor: Option<CommitCursor>,
-    range_context: Option<TuiRangeContext>,
+    step_mode: StepMode,
+    cumulative_base_endpoint_id: Option<String>,
+    comparison: Option<StepComparison>,
     commit_loading: bool,
     commit_status_message: Option<String>,
-    pending_commit_action: Option<CommitStepAction>,
+    pending_navigation_request: Option<PendingNavigationRequest>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingNavigationRequest {
+    Step(CommitStepAction),
+    Refresh,
 }
 
 impl AppState {
@@ -67,11 +78,15 @@ impl AppState {
             viewport_width: 120,
             viewport_height: 40,
             commit_source_mode: TuiSourceMode::Unsupported,
+            navigation_endpoints: vec![],
+            navigation_endpoint_index: HashMap::new(),
             commit_cursor: None,
-            range_context: None,
+            step_mode: StepMode::Pairwise,
+            cumulative_base_endpoint_id: None,
+            comparison: None,
             commit_loading: false,
             commit_status_message: None,
-            pending_commit_action: None,
+            pending_navigation_request: None,
         }
     }
 
@@ -109,18 +124,23 @@ impl AppState {
     pub fn configure_commit_navigation(
         &mut self,
         source_mode: TuiSourceMode,
+        endpoints: Vec<StepEndpoint>,
+        endpoint_index: HashMap<String, usize>,
         cursor: Option<CommitCursor>,
+        mode: StepMode,
+        base_endpoint_id: Option<String>,
     ) {
         self.commit_source_mode = source_mode;
+        self.navigation_endpoints = endpoints;
+        self.navigation_endpoint_index = endpoint_index;
         self.commit_cursor = cursor;
-    }
-
-    pub fn configure_range_context(&mut self, range_context: Option<TuiRangeContext>) {
-        self.range_context = range_context;
-    }
-
-    pub fn range_context(&self) -> Option<&TuiRangeContext> {
-        self.range_context.as_ref()
+        self.step_mode = mode;
+        self.cumulative_base_endpoint_id = match mode {
+            StepMode::Pairwise => None,
+            StepMode::Cumulative => base_endpoint_id
+                .or_else(|| self.commit_cursor.as_ref().map(|c| c.endpoint_id.clone())),
+        };
+        self.recompute_comparison();
     }
 
     pub fn commit_source_mode(&self) -> TuiSourceMode {
@@ -129,6 +149,7 @@ impl AppState {
 
     pub fn commit_navigation_enabled(&self) -> bool {
         self.commit_source_mode == TuiSourceMode::Commit
+            || self.commit_source_mode == TuiSourceMode::Unified
     }
 
     pub fn commit_cursor(&self) -> Option<&CommitCursor> {
@@ -147,32 +168,58 @@ impl AppState {
         self.commit_loading = loading;
     }
 
-    pub fn commit_context_line(&self) -> Option<String> {
+    pub fn comparison_line(&self) -> Option<(String, String, String, String)> {
         if !self.commit_navigation_enabled() {
             return None;
         }
 
-        let Some(cursor) = self.commit_cursor() else {
-            return Some("Commit metadata unavailable".to_string());
+        let comparison = self.comparison.as_ref()?;
+        let from = self.endpoint_display_label(&comparison.from_endpoint_id)?;
+        let to = self.endpoint_display_label(&comparison.to_endpoint_id)?;
+        let (left_label, right_label) = match self.step_mode {
+            StepMode::Pairwise => ("previous".to_string(), "current".to_string()),
+            StepMode::Cumulative => ("base".to_string(), "cursor".to_string()),
         };
-
-        let short_sha: String = cursor.sha.chars().take(7).collect();
-        match &cursor.rev_label {
-            Some(rev_label) => Some(format!("{rev_label}  {short_sha}  {}", cursor.subject)),
-            None => Some(format!("{short_sha}  {}", cursor.subject)),
-        }
+        Some((left_label, from, right_label, to))
     }
 
     pub fn queue_commit_action(&mut self, action: CommitStepAction) {
         if !self.commit_navigation_enabled() {
             return;
         }
-        self.pending_commit_action = Some(action);
+        self.pending_navigation_request = Some(PendingNavigationRequest::Step(action));
         self.commit_status_message = None;
     }
 
-    pub fn take_pending_commit_action(&mut self) -> Option<CommitStepAction> {
-        self.pending_commit_action.take()
+    pub fn toggle_step_mode(&mut self) {
+        if !self.commit_navigation_enabled() {
+            return;
+        }
+        self.step_mode = match self.step_mode {
+            StepMode::Pairwise => StepMode::Cumulative,
+            StepMode::Cumulative => StepMode::Pairwise,
+        };
+        self.cumulative_base_endpoint_id = if self.step_mode == StepMode::Cumulative {
+            self.commit_cursor
+                .as_ref()
+                .map(|cursor| cursor.endpoint_id.clone())
+        } else {
+            None
+        };
+        self.recompute_comparison();
+        self.pending_navigation_request = Some(PendingNavigationRequest::Refresh);
+    }
+
+    pub fn take_pending_navigation_request(&mut self) -> Option<PendingNavigationRequest> {
+        self.pending_navigation_request.take()
+    }
+
+    pub fn step_mode(&self) -> StepMode {
+        self.step_mode
+    }
+
+    pub fn cumulative_base_endpoint_id(&self) -> Option<String> {
+        self.cumulative_base_endpoint_id.clone()
     }
 
     pub fn apply_commit_step_response(&mut self, response: CommitStepResponse) {
@@ -180,7 +227,7 @@ impl AppState {
             CommitLoadStatus::Loaded => {
                 if let Some(snapshot) = response.snapshot {
                     self.apply_commit_snapshot(snapshot);
-                    self.commit_status_message = Some("Commit snapshot loaded".to_string());
+                    self.commit_status_message = Some("Step snapshot loaded".to_string());
                 }
                 self.commit_loading = false;
             }
@@ -200,17 +247,20 @@ impl AppState {
                 self.commit_loading = false;
             }
             CommitLoadStatus::BoundaryNoop => {
-                self.commit_status_message = Some("Commit boundary reached".to_string());
+                self.commit_status_message = Some("Step boundary reached".to_string());
                 self.commit_loading = false;
             }
             CommitLoadStatus::IgnoredStaleResult => {
-                self.commit_status_message = Some("Ignored stale commit reload result".to_string());
+                self.commit_status_message = Some("Ignored stale reload result".to_string());
             }
         }
     }
 
     fn apply_commit_snapshot(&mut self, snapshot: CommitSnapshot) {
         self.commit_cursor = Some(snapshot.cursor);
+        self.step_mode = snapshot.mode;
+        self.cumulative_base_endpoint_id = snapshot.base_endpoint_id;
+        self.comparison = Some(snapshot.comparison);
         self.rows = Self::rows_from_diff_result(&snapshot.result);
         self.selected = 0;
         self.detail_scroll = 0;
@@ -315,6 +365,7 @@ impl AppState {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
+            KeyCode::Char('m') => self.toggle_step_mode(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::Char('g') => self.selected = 0,
@@ -334,6 +385,7 @@ impl AppState {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
+            KeyCode::Char('m') => self.toggle_step_mode(),
             KeyCode::Esc => self.close_detail(),
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
@@ -503,6 +555,60 @@ impl AppState {
             DiffView::SideBySide => &detail.side_by_side_hunks,
         }
     }
+
+    fn recompute_comparison(&mut self) {
+        if !self.commit_navigation_enabled() {
+            self.comparison = None;
+            return;
+        }
+        let Some(cursor) = self.commit_cursor.as_ref() else {
+            self.comparison = None;
+            return;
+        };
+        let Some(&cursor_index) = self.navigation_endpoint_index.get(&cursor.endpoint_id) else {
+            self.comparison = None;
+            return;
+        };
+        let Some(to_endpoint) = self.navigation_endpoints.get(cursor_index) else {
+            self.comparison = None;
+            return;
+        };
+        let from_endpoint_id = match self.step_mode {
+            StepMode::Pairwise => {
+                if cursor_index == 0 {
+                    to_endpoint.endpoint_id.clone()
+                } else {
+                    self.navigation_endpoints
+                        .get(cursor_index - 1)
+                        .map(|endpoint| endpoint.endpoint_id.clone())
+                        .unwrap_or_else(|| to_endpoint.endpoint_id.clone())
+                }
+            }
+            StepMode::Cumulative => self
+                .cumulative_base_endpoint_id
+                .clone()
+                .unwrap_or_else(|| to_endpoint.endpoint_id.clone()),
+        };
+        self.comparison = Some(StepComparison {
+            from_endpoint_id,
+            to_endpoint_id: to_endpoint.endpoint_id.clone(),
+        });
+    }
+
+    fn endpoint_display_label(&self, endpoint_id: &str) -> Option<String> {
+        let &index = self.navigation_endpoint_index.get(endpoint_id)?;
+        let endpoint = self.navigation_endpoints.get(index)?;
+        if let Some(display_ref) = endpoint.display_ref.as_deref() {
+            return Some(display_ref.to_string());
+        }
+        match &endpoint.kind {
+            crate::commands::diff::StepEndpointKind::Commit { sha } => {
+                Some(sha.chars().take(7).collect())
+            }
+            crate::commands::diff::StepEndpointKind::Index => Some("INDEX".to_string()),
+            crate::commands::diff::StepEndpointKind::Working => Some("WORKING".to_string()),
+        }
+    }
 }
 
 fn range_label(change: &SemanticChange) -> Option<String> {
@@ -563,6 +669,9 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use sem_core::model::change::{ChangeType, SemanticChange};
+    use std::collections::HashMap;
+
+    use crate::commands::diff::StepEndpointKind;
 
     fn change(file: &str, name: &str, before: &str, after: &str) -> SemanticChange {
         SemanticChange {
@@ -603,6 +712,39 @@ mod tests {
         };
 
         AppState::from_diff_result(&result, DiffView::Unified)
+    }
+
+    fn navigation_fixture() -> (Vec<StepEndpoint>, HashMap<String, usize>, CommitCursor) {
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:aaaaaaa".to_string(),
+                display_ref: Some("HEAD~1".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "aaaaaaa".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:bbbbbbb".to_string(),
+                display_ref: Some("HEAD".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "bbbbbbb".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:aaaaaaa".to_string(), 0usize),
+            ("commit:bbbbbbb".to_string(), 1usize),
+        ]);
+        let cursor = CommitCursor {
+            endpoint_id: "commit:bbbbbbb".to_string(),
+            index: 1,
+            rev_label: Some("HEAD".to_string()),
+            sha: "bbbbbbb".to_string(),
+            subject: "tip".to_string(),
+            has_older: true,
+            has_newer: false,
+        };
+        (endpoints, endpoint_index, cursor)
     }
 
     #[test]
@@ -744,19 +886,27 @@ mod tests {
     #[test]
     fn bracket_keys_queue_commit_actions_in_list_and_detail_modes() {
         let mut app = app();
-        app.configure_commit_navigation(TuiSourceMode::Commit, None);
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
         assert_eq!(
-            app.take_pending_commit_action(),
-            Some(CommitStepAction::Older)
+            app.take_pending_navigation_request(),
+            Some(PendingNavigationRequest::Step(CommitStepAction::Older))
         );
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
         assert_eq!(
-            app.take_pending_commit_action(),
-            Some(CommitStepAction::Newer)
+            app.take_pending_navigation_request(),
+            Some(PendingNavigationRequest::Step(CommitStepAction::Newer))
         );
     }
 
@@ -785,6 +935,12 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            mode: StepMode::Pairwise,
+            base_endpoint_id: None,
+            comparison: StepComparison {
+                from_endpoint_id: "commit:def5678".to_string(),
+                to_endpoint_id: "commit:abc1234".to_string(),
+            },
         };
 
         app.apply_commit_step_response(CommitStepResponse {
@@ -801,47 +957,84 @@ mod tests {
             app.commit_cursor().map(|cursor| cursor.sha.as_str()),
             Some("abc1234")
         );
-        assert_eq!(app.commit_status_message(), Some("Commit snapshot loaded"));
+        assert_eq!(app.commit_status_message(), Some("Step snapshot loaded"));
     }
 
     #[test]
-    fn commit_context_line_formats_for_supported_and_unsupported_modes() {
+    fn comparison_line_formats_for_pairwise_and_cumulative_modes() {
         let mut app = app();
-        app.configure_commit_navigation(TuiSourceMode::Unsupported, None);
-        assert_eq!(app.commit_context_line(), None);
+        app.configure_commit_navigation(
+            TuiSourceMode::Unsupported,
+            vec![],
+            HashMap::new(),
+            None,
+            StepMode::Pairwise,
+            None,
+        );
+        assert_eq!(app.comparison_line(), None);
 
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
-            Some(CommitCursor {
-                endpoint_id: "commit:0123456789abcdef".to_string(),
-                index: 0,
-                rev_label: Some("HEAD~3".to_string()),
-                sha: "0123456789abcdef".to_string(),
-                subject: "feat: add stepping".to_string(),
-                has_older: true,
-                has_newer: true,
-            }),
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
         );
         assert_eq!(
-            app.commit_context_line(),
-            Some("HEAD~3  0123456  feat: add stepping".to_string())
+            app.comparison_line(),
+            Some((
+                "previous".to_string(),
+                "HEAD~1".to_string(),
+                "current".to_string(),
+                "HEAD".to_string()
+            ))
         );
 
+        app.toggle_step_mode();
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
+            vec![
+                StepEndpoint {
+                    endpoint_id: "commit:aaa".to_string(),
+                    display_ref: Some("HEAD~2".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "aaa".to_string(),
+                    },
+                },
+                StepEndpoint {
+                    endpoint_id: "commit:bbb".to_string(),
+                    display_ref: Some("HEAD~1".to_string()),
+                    kind: StepEndpointKind::Commit {
+                        sha: "bbb".to_string(),
+                    },
+                },
+            ],
+            HashMap::from([
+                ("commit:aaa".to_string(), 0usize),
+                ("commit:bbb".to_string(), 1usize),
+            ]),
             Some(CommitCursor {
-                endpoint_id: "commit:abcdef0123456789".to_string(),
-                index: 0,
-                rev_label: None,
-                sha: "abcdef0123456789".to_string(),
-                subject: "chore: cleanup".to_string(),
+                endpoint_id: "commit:bbb".to_string(),
+                index: 1,
+                rev_label: Some("HEAD~1".to_string()),
+                sha: "bbb".to_string(),
+                subject: "feat".to_string(),
                 has_older: true,
                 has_newer: false,
             }),
+            StepMode::Cumulative,
+            Some("commit:aaa".to_string()),
         );
         assert_eq!(
-            app.commit_context_line(),
-            Some("abcdef0  chore: cleanup".to_string())
+            app.comparison_line(),
+            Some((
+                "base".to_string(),
+                "HEAD~2".to_string(),
+                "cursor".to_string(),
+                "HEAD~1".to_string()
+            ))
         );
     }
 
@@ -873,6 +1066,12 @@ mod tests {
                     moved_count: 0,
                     renamed_count: 0,
                 },
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
+                comparison: StepComparison {
+                    from_endpoint_id: "commit:abc1234".to_string(),
+                    to_endpoint_id: "commit:abc1234".to_string(),
+                },
             }),
             error: None,
             retain_previous_snapshot: false,
@@ -887,11 +1086,18 @@ mod tests {
     #[test]
     fn unsupported_mode_response_sets_status_hint() {
         let mut app = app();
-        app.configure_commit_navigation(TuiSourceMode::Unsupported, None);
+        app.configure_commit_navigation(
+            TuiSourceMode::Unsupported,
+            vec![],
+            HashMap::new(),
+            None,
+            StepMode::Pairwise,
+            None,
+        );
         app.set_commit_loading(true);
         assert!(app.commit_loading());
         app.queue_commit_action(CommitStepAction::Older);
-        assert_eq!(app.take_pending_commit_action(), None);
+        assert_eq!(app.take_pending_navigation_request(), None);
 
         app.apply_commit_step_response(CommitStepResponse {
             applied_request_id: 2,
@@ -905,6 +1111,32 @@ mod tests {
             Some("Commit navigation unavailable for current input mode")
         );
         assert!(!app.commit_loading());
+    }
+
+    #[test]
+    fn m_key_toggles_mode_and_queues_refresh() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+        assert_eq!(app.step_mode(), StepMode::Pairwise);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        assert_eq!(app.step_mode(), StepMode::Cumulative);
+        assert_eq!(
+            app.take_pending_navigation_request(),
+            Some(PendingNavigationRequest::Refresh)
+        );
+        assert_eq!(
+            app.cumulative_base_endpoint_id(),
+            Some("commit:bbbbbbb".to_string())
+        );
     }
 
     #[test]

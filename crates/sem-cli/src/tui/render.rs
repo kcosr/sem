@@ -166,10 +166,11 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
     let mut footer =
-        "Controls: ↑/↓ j/k move, Enter open, [/] step commits, g/G jump, ? help, q/Ctrl+c quit"
+        "Controls: ↑/↓ j/k move, Enter open, [/] step, m mode, g/G jump, ? help, q/Ctrl+c quit"
             .to_string();
+    footer.push_str(&format!(" | mode: {}", app.step_mode().as_token()));
     if !app.commit_navigation_enabled() {
-        footer.push_str(" | commit stepping disabled");
+        footer.push_str(" | stepping disabled");
     }
     draw_footer(frame, chunks[2], &footer, app.commit_loading());
 }
@@ -242,13 +243,14 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     }
 
     let mut footer =
-        "Controls: Esc list, [/] step commits, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, [/] step, m mode, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
+    footer.push_str(&format!(" | mode: {}", app.step_mode().as_token()));
     if app.fallback_active() {
         footer.push_str(" | width too narrow for side-by-side, showing unified");
     }
     if !app.commit_navigation_enabled() {
-        footer.push_str(" | commit stepping disabled");
+        footer.push_str(" | stepping disabled");
     } else if let Some(message) = app.commit_status_message() {
         footer.push_str(&format!(" | {message}"));
     }
@@ -275,16 +277,28 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &str, loading: bool) {
 }
 
 fn context_header_line(app: &AppState, width: u16) -> String {
-    if let Some(range) = app.range_context() {
-        return format_range_context_line(width, &range.from, &range.to);
+    if let Some((left_label, left_value, right_label, right_value)) = app.comparison_line() {
+        return format_comparator_context_line(
+            width,
+            &left_label,
+            &left_value,
+            &right_label,
+            &right_value,
+        );
     }
 
-    app.commit_context_line().unwrap_or_default()
+    String::new()
 }
 
-fn format_range_context_line(width: u16, from: &str, to: &str) -> String {
-    let left = format!("from  {from}");
-    let right = format!("to  {to}");
+fn format_comparator_context_line(
+    width: u16,
+    left_label: &str,
+    left_value: &str,
+    right_label: &str,
+    right_value: &str,
+) -> String {
+    let left = format!("{left_label}  {left_value}");
+    let right = format!("{right_label}  {right_value}");
     let total = usize::from(width);
     if total == 0 {
         return String::new();
@@ -319,12 +333,14 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
     let help_lines = vec![
         Line::from("List Mode:"),
         Line::from("  ↑/↓ or j/k move selection"),
-        Line::from("  [ / ] step older/newer commit"),
-        Line::from("  commit stepping is disabled outside --commit mode"),
+        Line::from("  [ / ] step older/newer endpoint"),
+        Line::from("  m toggle pairwise/cumulative mode"),
+        Line::from("  stepping is disabled for stdin/two-file mode"),
         Line::from("  Enter open detail"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Detail Mode:"),
-        Line::from("  [ / ] step older/newer commit"),
+        Line::from("  [ / ] step older/newer endpoint"),
+        Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  Esc back to list"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
@@ -995,8 +1011,11 @@ mod tests {
     use ratatui::Terminal;
     use sem_core::model::change::{ChangeType, SemanticChange};
     use sem_core::parser::differ::DiffResult;
+    use std::collections::HashMap;
 
-    use crate::commands::diff::{CommitCursor, DiffView, TuiRangeContext, TuiSourceMode};
+    use crate::commands::diff::{
+        CommitCursor, DiffView, StepEndpoint, StepEndpointKind, StepMode, TuiSourceMode,
+    };
     use crate::tui::app::AppState;
 
     fn sample_result() -> DiffResult {
@@ -1066,17 +1085,41 @@ mod tests {
     #[test]
     fn draw_list_mode_with_commit_navigation_header_succeeds() {
         let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:0123456789abcdef".to_string(),
+                display_ref: Some("HEAD~2".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "0123456789abcdef".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:89abcdef01234567".to_string(),
+                display_ref: Some("HEAD~1".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "89abcdef01234567".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:0123456789abcdef".to_string(), 0usize),
+            ("commit:89abcdef01234567".to_string(), 1usize),
+        ]);
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
             Some(CommitCursor {
-                endpoint_id: "commit:0123456789abcdef".to_string(),
-                index: 0,
+                endpoint_id: "commit:89abcdef01234567".to_string(),
+                index: 1,
                 rev_label: Some("HEAD~2".to_string()),
                 sha: "0123456789abcdef".to_string(),
                 subject: "feat: sample".to_string(),
                 has_older: true,
                 has_newer: true,
             }),
+            StepMode::Pairwise,
+            None,
         );
         app.set_commit_loading(true);
 
@@ -1088,18 +1131,50 @@ mod tests {
     }
 
     #[test]
-    fn draw_list_mode_with_range_header_succeeds() {
+    fn draw_list_mode_with_cumulative_comparator_header_succeeds() {
         let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
-        app.configure_range_context(Some(TuiRangeContext {
-            from: "HEAD~3  abcdef0  feat: start".to_string(),
-            to: "HEAD  1234567  feat: finish".to_string(),
-        }));
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:abcdef0123456789".to_string(),
+                display_ref: Some("HEAD~3".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "abcdef0123456789".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:1234567890abcdef".to_string(),
+                display_ref: Some("HEAD".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "1234567890abcdef".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:abcdef0123456789".to_string(), 0usize),
+            ("commit:1234567890abcdef".to_string(), 1usize),
+        ]);
+        app.configure_commit_navigation(
+            TuiSourceMode::Unified,
+            endpoints,
+            endpoint_index,
+            Some(CommitCursor {
+                endpoint_id: "commit:1234567890abcdef".to_string(),
+                index: 1,
+                rev_label: Some("HEAD".to_string()),
+                sha: "1234567890abcdef".to_string(),
+                subject: "finish".to_string(),
+                has_older: true,
+                has_newer: false,
+            }),
+            StepMode::Cumulative,
+            Some("commit:abcdef0123456789".to_string()),
+        );
 
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).expect("terminal should initialize");
         terminal
             .draw(|frame| draw(frame, &app))
-            .expect("draw should succeed with range header");
+            .expect("draw should succeed with comparator header");
     }
 
     #[test]

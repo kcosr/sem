@@ -18,15 +18,16 @@ use ratatui::Terminal;
 use sem_core::parser::differ::DiffResult;
 
 use crate::commands::diff::{
-    process_commit_step_request, CommitCursor, CommitLoadStatus, CommitNavigationContext,
-    CommitStepRequest, CommitStepResponse, DiffView, TuiRangeContext, TuiSourceMode,
+    process_commit_refresh_request, process_commit_step_request, CommitCursor, CommitLoadStatus,
+    CommitNavigationContext, CommitRefreshRequest, CommitStepRequest, CommitStepResponse, DiffView,
+    StepMode, TuiSourceMode,
 };
+use app::PendingNavigationRequest;
 
 pub fn run_tui(
     result: &DiffResult,
     initial_view: DiffView,
     commit_navigation: Option<(CommitNavigationContext, CommitCursor)>,
-    range_context: Option<TuiRangeContext>,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -38,23 +39,38 @@ pub fn run_tui(
 
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
     render::prewarm_syntax_highlighting_async();
-    let (context, source_mode, cursor) = if let Some((context, cursor)) = commit_navigation {
-        (context, TuiSourceMode::Commit, Some(cursor))
-    } else {
-        (
-            CommitNavigationContext {
-                cwd: String::new(),
-                file_exts: vec![],
-                source_mode: TuiSourceMode::Unsupported,
-                endpoints: vec![],
-                endpoint_index: HashMap::new(),
-            },
-            TuiSourceMode::Unsupported,
-            None,
-        )
-    };
-    app_state.configure_commit_navigation(source_mode, cursor);
-    app_state.configure_range_context(range_context);
+    let (context, source_mode, cursor, mode, base_endpoint_id) =
+        if let Some((context, cursor)) = commit_navigation {
+            (
+                context,
+                TuiSourceMode::Commit,
+                Some(cursor),
+                StepMode::Pairwise,
+                None,
+            )
+        } else {
+            (
+                CommitNavigationContext {
+                    cwd: String::new(),
+                    file_exts: vec![],
+                    source_mode: TuiSourceMode::Unsupported,
+                    endpoints: vec![],
+                    endpoint_index: HashMap::new(),
+                },
+                TuiSourceMode::Unsupported,
+                None,
+                StepMode::Pairwise,
+                None,
+            )
+        };
+    app_state.configure_commit_navigation(
+        source_mode,
+        context.endpoints.clone(),
+        context.endpoint_index.clone(),
+        cursor,
+        mode,
+        base_endpoint_id,
+    );
     let mut reload_coordinator = ReloadCoordinator::new(context);
 
     if let Ok(size) = terminal.size() {
@@ -75,21 +91,44 @@ pub fn run_tui(
             }
         }
 
-        if let Some(action) = app_state.take_pending_commit_action() {
-            let request = CommitStepRequest {
-                request_id: reload_coordinator.next_request_id(),
-                action,
-                current_endpoint_id: app_state
-                    .commit_cursor()
-                    .map(|cursor| cursor.endpoint_id.clone())
-                    .unwrap_or_default(),
-                current_index: app_state
-                    .commit_cursor()
-                    .map(|cursor| cursor.index)
-                    .unwrap_or(0),
-                source_mode: app_state.commit_source_mode(),
-            };
-            reload_coordinator.queue_request(request);
+        if let Some(request_kind) = app_state.take_pending_navigation_request() {
+            let request_id = reload_coordinator.next_request_id();
+            let current_endpoint_id = app_state
+                .commit_cursor()
+                .map(|cursor| cursor.endpoint_id.clone())
+                .unwrap_or_default();
+            let current_index = app_state
+                .commit_cursor()
+                .map(|cursor| cursor.index)
+                .unwrap_or(0);
+            let source_mode = app_state.commit_source_mode();
+            let mode = app_state.step_mode();
+            let base_endpoint_id = app_state.cumulative_base_endpoint_id();
+            match request_kind {
+                PendingNavigationRequest::Step(action) => {
+                    reload_coordinator.queue_request(WorkerRequest::Step(CommitStepRequest {
+                        request_id,
+                        action,
+                        current_endpoint_id,
+                        current_index,
+                        source_mode,
+                        mode,
+                        base_endpoint_id,
+                    }));
+                }
+                PendingNavigationRequest::Refresh => {
+                    reload_coordinator.queue_request(WorkerRequest::Refresh(
+                        CommitRefreshRequest {
+                            request_id,
+                            current_endpoint_id,
+                            current_index,
+                            source_mode,
+                            mode,
+                            base_endpoint_id,
+                        },
+                    ));
+                }
+            }
             app_state.set_commit_loading(true);
         }
 
@@ -105,21 +144,32 @@ pub fn run_tui(
 }
 
 struct ReloadCoordinator {
-    request_tx: Sender<CommitStepRequest>,
+    request_tx: Sender<WorkerRequest>,
     response_rx: Receiver<CommitStepResponse>,
     in_flight_request_id: Option<u64>,
-    pending_request: Option<CommitStepRequest>,
+    pending_request: Option<WorkerRequest>,
     latest_requested_id: u64,
+}
+
+#[derive(Clone, Debug)]
+enum WorkerRequest {
+    Step(CommitStepRequest),
+    Refresh(CommitRefreshRequest),
 }
 
 impl ReloadCoordinator {
     fn new(context: CommitNavigationContext) -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<CommitStepRequest>();
+        let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
         let (response_tx, response_rx) = mpsc::channel::<CommitStepResponse>();
 
         thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
-                let response = process_commit_step_request(&context, &request);
+                let response = match request {
+                    WorkerRequest::Step(request) => process_commit_step_request(&context, &request),
+                    WorkerRequest::Refresh(request) => {
+                        process_commit_refresh_request(&context, &request)
+                    }
+                };
                 if response_tx.send(response).is_err() {
                     break;
                 }
@@ -140,11 +190,15 @@ impl ReloadCoordinator {
         self.latest_requested_id
     }
 
-    fn queue_request(&mut self, request: CommitStepRequest) {
-        self.latest_requested_id = self.latest_requested_id.max(request.request_id);
+    fn queue_request(&mut self, request: WorkerRequest) {
+        let request_id = match &request {
+            WorkerRequest::Step(request) => request.request_id,
+            WorkerRequest::Refresh(request) => request.request_id,
+        };
+        self.latest_requested_id = self.latest_requested_id.max(request_id);
         if self.in_flight_request_id.is_none() {
             if self.request_tx.send(request.clone()).is_ok() {
-                self.in_flight_request_id = Some(request.request_id);
+                self.in_flight_request_id = Some(request_id);
             }
             return;
         }
@@ -160,8 +214,12 @@ impl ReloadCoordinator {
 
         self.in_flight_request_id = None;
         if let Some(next_request) = self.pending_request.take() {
+            let next_request_id = match &next_request {
+                WorkerRequest::Step(request) => request.request_id,
+                WorkerRequest::Refresh(request) => request.request_id,
+            };
             if self.request_tx.send(next_request.clone()).is_ok() {
-                self.in_flight_request_id = Some(next_request.request_id);
+                self.in_flight_request_id = Some(next_request_id);
             }
         }
 
@@ -195,9 +253,9 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::ReloadCoordinator;
+    use super::{ReloadCoordinator, WorkerRequest};
     use crate::commands::diff::{
-        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest,
+        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest, StepMode,
         TuiSourceMode,
     };
     use std::collections::HashMap;
@@ -215,21 +273,25 @@ mod tests {
         });
 
         let first_request_id = coordinator.next_request_id();
-        coordinator.queue_request(CommitStepRequest {
+        coordinator.queue_request(WorkerRequest::Step(CommitStepRequest {
             request_id: first_request_id,
             action: CommitStepAction::Older,
             current_endpoint_id: String::new(),
             current_index: 0,
             source_mode: TuiSourceMode::Unsupported,
-        });
+            mode: StepMode::Pairwise,
+            base_endpoint_id: None,
+        }));
         let second_request_id = coordinator.next_request_id();
-        coordinator.queue_request(CommitStepRequest {
+        coordinator.queue_request(WorkerRequest::Step(CommitStepRequest {
             request_id: second_request_id,
             action: CommitStepAction::Newer,
             current_endpoint_id: String::new(),
             current_index: 0,
             source_mode: TuiSourceMode::Unsupported,
-        });
+            mode: StepMode::Pairwise,
+            base_endpoint_id: None,
+        }));
 
         let first = wait_for_response(&mut coordinator);
         assert_eq!(first.status, CommitLoadStatus::IgnoredStaleResult);
@@ -258,13 +320,15 @@ mod tests {
         ];
         for action in sequence {
             let request_id = coordinator.next_request_id();
-            coordinator.queue_request(CommitStepRequest {
+            coordinator.queue_request(WorkerRequest::Step(CommitStepRequest {
                 request_id,
                 action,
                 current_endpoint_id: String::new(),
                 current_index: 0,
                 source_mode: TuiSourceMode::Unsupported,
-            });
+                mode: StepMode::Pairwise,
+                base_endpoint_id: None,
+            }));
         }
 
         let first = wait_for_response(&mut coordinator);
