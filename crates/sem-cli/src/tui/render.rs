@@ -1,10 +1,47 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use sem_core::model::change::ChangeType;
+use std::path::Path;
+use std::sync::OnceLock;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle, Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::commands::diff::DiffView;
 
 use super::app::{AppState, Mode};
 use super::detail::LineKind;
+
+const ICON_COL_WIDTH: usize = 2;
+const INTER_COL_SPACES: usize = 3;
+const TYPE_MIN_WIDTH: usize = 8;
+const ENTITY_MIN_WIDTH: usize = 16;
+const CHANGE_MIN_WIDTH: usize = 10;
+const DELTA_MIN_WIDTH: usize = 11;
+const TYPE_EXTRA_MAX: usize = 4;
+const CHANGE_EXTRA_MAX: usize = 2;
+const DELTA_EXTRA_MAX: usize = 2;
+const DIFF_ADD_BG: Color = Color::Rgb(33, 58, 43);
+const DIFF_REMOVE_BG: Color = Color::Rgb(74, 34, 29);
+const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
+const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
+
+#[derive(Clone, Copy, Debug)]
+struct ListColumnWidths {
+    type_col: usize,
+    entity_col: usize,
+    change_col: usize,
+    delta_col: usize,
+}
+
+#[derive(Clone, Debug)]
+struct UnifiedRenderRow {
+    kind: LineKind,
+    old_number: Option<usize>,
+    new_number: Option<usize>,
+    sign: char,
+    text: String,
+}
 
 pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
     match app.mode() {
@@ -21,44 +58,107 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(frame.area());
+    let widths = compute_list_column_widths(chunks[1].width);
 
+    let columns = format!(
+        "  {} {} {} {}",
+        fit_cell("Type", widths.type_col),
+        fit_cell("Entity", widths.entity_col),
+        fit_cell("Change", widths.change_col),
+        fit_cell("+/-", widths.delta_col),
+    );
     frame.render_widget(
-        Paragraph::new("sem diff --tui (List)").style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(vec![
+            Line::styled(app.list_header_command(), Style::default().fg(Color::Cyan)),
+            Line::raw(""),
+            Line::styled(columns, Style::default().fg(Color::DarkGray)),
+        ]),
         chunks[0],
     );
 
-    let items: Vec<ListItem<'_>> = app
-        .rows()
-        .iter()
-        .map(|row| {
-            let mut line = format!(
-                "{}  {} {} [{}]",
-                row.file_path, row.entity_type, row.entity_name, row.change_type
-            );
-            if let Some(range_label) = &row.range_label {
-                line.push(' ');
-                line.push_str(range_label);
+    let mut items: Vec<ListItem<'_>> = Vec::new();
+    let mut selectable_indices: Vec<usize> = Vec::new();
+    let mut current_file: Option<&str> = None;
+
+    for row in app.rows() {
+        if current_file != Some(row.file_path.as_str()) {
+            if !items.is_empty() {
+                items.push(ListItem::new(Line::raw("")));
             }
-            ListItem::new(line)
-        })
-        .collect();
+            current_file = Some(row.file_path.as_str());
+            items.push(ListItem::new(Line::styled(
+                row.file_path.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        let entity_index = selectable_indices.len();
+        let marker = if entity_index == app.selected() {
+            "▶"
+        } else {
+            " "
+        };
+        let (icon, tag, style) = match row.change.change_type {
+            ChangeType::Added => ("⊕", "[added]", Style::default().fg(Color::Green)),
+            ChangeType::Modified => {
+                if row.change.structural_change == Some(false) {
+                    ("~", "[cosmetic]", Style::default().fg(Color::DarkGray))
+                } else {
+                    ("∆", "[modified]", Style::default().fg(Color::Yellow))
+                }
+            }
+            ChangeType::Deleted => ("⊖", "[deleted]", Style::default().fg(Color::Red)),
+            ChangeType::Moved => ("→", "[moved]", Style::default().fg(Color::Blue)),
+            ChangeType::Renamed => ("↻", "[renamed]", Style::default().fg(Color::Cyan)),
+        };
+
+        let spans = vec![
+            Span::styled(format!("{marker}{icon}"), style),
+            Span::styled(
+                fit_cell(&row.entity_type, widths.type_col),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                fit_cell(&row.entity_name, widths.entity_col),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(fit_cell(tag, widths.change_col), style),
+            Span::raw(" "),
+        ];
+        let mut spans = spans;
+        append_delta_spans(
+            &mut spans,
+            row.added_lines,
+            row.removed_lines,
+            widths.delta_col,
+        );
+
+        selectable_indices.push(items.len());
+        items.push(ListItem::new(Line::from(spans)));
+    }
 
     let list = List::new(items)
         .block(Block::default().title("Entities").borders(Borders::ALL))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-        .highlight_symbol("▶ ");
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     let mut state = ListState::default();
-    state.select(Some(app.selected()));
+    let selected = app
+        .selected()
+        .min(selectable_indices.len().saturating_sub(1));
+    state.select(selectable_indices.get(selected).copied());
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
     frame.render_widget(
-        Paragraph::new("Controls: ↑/↓ j/k move, Enter open, g/G jump, ? help, q quit"),
+        Paragraph::new("Controls: ↑/↓ j/k move, Enter open, g/G jump, ? help, q/Ctrl+c quit"),
         chunks[2],
     );
 }
@@ -73,37 +173,30 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
         ])
         .split(frame.area());
 
-    let view_label = match app.effective_view() {
-        DiffView::Unified => "unified",
-        DiffView::SideBySide => "side-by-side",
-    };
-
     frame.render_widget(
-        Paragraph::new(format!("Detail: {} ({view_label})", app.detail_title()))
-            .style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(app.detail_title()).style(Style::default().fg(Color::Cyan)),
         chunks[0],
     );
+    let selected_file_path = app
+        .rows()
+        .get(app.selected())
+        .map(|row| row.file_path.as_str());
 
     match app.effective_view() {
         DiffView::Unified => {
+            let rows = build_unified_render_rows(app.unified_lines());
+            let old_width = line_number_width(rows.iter().filter_map(|row| row.old_number).max());
+            let new_width = line_number_width(rows.iter().filter_map(|row| row.new_number).max());
             let lines: Vec<Line<'_>> = app
                 .unified_lines()
                 .iter()
-                .map(|(kind, text)| {
-                    let style = match kind {
-                        LineKind::Header => Style::default().fg(Color::Magenta),
-                        LineKind::Added => Style::default().fg(Color::Green),
-                        LineKind::Removed => Style::default().fg(Color::Red),
-                        LineKind::Modified => Style::default().fg(Color::Yellow),
-                        LineKind::Unchanged => Style::default(),
-                    };
-                    Line::styled(text.clone(), style)
-                })
+                .zip(rows.iter())
+                .map(|(_, row)| render_unified_row(row, old_width, new_width, selected_file_path))
                 .collect();
 
             frame.render_widget(
                 Paragraph::new(lines)
-                    .block(Block::default().borders(Borders::ALL).title("Unified Diff"))
+                    .block(Block::default().borders(Borders::ALL).title("Diff"))
                     .wrap(Wrap { trim: false })
                     .scroll((saturating_scroll(app.detail_scroll()), 0)),
                 chunks[1],
@@ -116,27 +209,12 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
             let lines: Vec<Line<'_>> = app
                 .side_by_side_lines()
                 .iter()
-                .map(|line| {
-                    let left = format_column(line.left_number, &line.left_text, half);
-                    let right = format_column(line.right_number, &line.right_text, half);
-                    let style = match line.kind {
-                        LineKind::Header => Style::default().fg(Color::Magenta),
-                        LineKind::Added => Style::default().fg(Color::Green),
-                        LineKind::Removed => Style::default().fg(Color::Red),
-                        LineKind::Modified => Style::default().fg(Color::Yellow),
-                        LineKind::Unchanged => Style::default(),
-                    };
-                    Line::styled(format!("{left} | {right}"), style)
-                })
+                .map(|line| render_side_by_side_row(line, half, selected_file_path))
                 .collect();
 
             frame.render_widget(
                 Paragraph::new(lines)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("Side-by-Side Diff"),
-                    )
+                    .block(Block::default().borders(Borders::ALL).title("Diff"))
                     .scroll((saturating_scroll(app.detail_scroll()), 0)),
                 chunks[1],
             );
@@ -144,7 +222,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     }
 
     let mut footer =
-        "Controls: Esc list, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q quit"
+        "Controls: Esc list, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         footer.push_str(" | width too narrow for side-by-side, showing unified");
@@ -164,13 +242,14 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  g/G jump top/bottom"),
         Line::from("Detail Mode:"),
         Line::from("  Esc back to list"),
+        Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
         Line::from("  n/p next/previous hunk"),
         Line::from("  PageUp/PageDown scroll by page"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Global:"),
         Line::from("  ? toggle help"),
-        Line::from("  q quit"),
+        Line::from("  q or Ctrl+c quit"),
     ];
 
     let paragraph = Paragraph::new(help_lines)
@@ -191,6 +270,522 @@ fn format_column(number: Option<usize>, text: &str, width: usize) -> String {
     };
     let content = format!("{number_text} {trimmed}");
     format!("{content:width$}")
+}
+
+fn build_unified_render_rows(lines: &[(LineKind, String)]) -> Vec<UnifiedRenderRow> {
+    let mut rows = Vec::with_capacity(lines.len());
+    let mut old_line = 1usize;
+    let mut new_line = 1usize;
+    let mut has_hunk = false;
+
+    for (kind, text) in lines {
+        match kind {
+            LineKind::Header => {
+                if let Some((next_old, next_new)) = parse_hunk_header_starts(text) {
+                    old_line = next_old;
+                    new_line = next_new;
+                    has_hunk = true;
+                }
+
+                rows.push(UnifiedRenderRow {
+                    kind: *kind,
+                    old_number: None,
+                    new_number: None,
+                    sign: ' ',
+                    text: text.clone(),
+                });
+            }
+            LineKind::Added => {
+                let number = if has_hunk {
+                    let value = Some(new_line);
+                    new_line = new_line.saturating_add(1);
+                    value
+                } else {
+                    None
+                };
+
+                rows.push(UnifiedRenderRow {
+                    kind: *kind,
+                    old_number: None,
+                    new_number: number,
+                    sign: '+',
+                    text: strip_line_prefix(text, "+ "),
+                });
+            }
+            LineKind::Removed => {
+                let number = if has_hunk {
+                    let value = Some(old_line);
+                    old_line = old_line.saturating_add(1);
+                    value
+                } else {
+                    None
+                };
+
+                rows.push(UnifiedRenderRow {
+                    kind: *kind,
+                    old_number: number,
+                    new_number: None,
+                    sign: '-',
+                    text: strip_line_prefix(text, "- "),
+                });
+            }
+            LineKind::Unchanged => {
+                let old_number = if has_hunk { Some(old_line) } else { None };
+                let new_number = if has_hunk { Some(new_line) } else { None };
+                if has_hunk {
+                    old_line = old_line.saturating_add(1);
+                    new_line = new_line.saturating_add(1);
+                }
+
+                rows.push(UnifiedRenderRow {
+                    kind: *kind,
+                    old_number,
+                    new_number,
+                    sign: ' ',
+                    text: strip_line_prefix(text, "  "),
+                });
+            }
+            LineKind::Modified => {
+                let old_number = if has_hunk { Some(old_line) } else { None };
+                let new_number = if has_hunk { Some(new_line) } else { None };
+                if has_hunk {
+                    old_line = old_line.saturating_add(1);
+                    new_line = new_line.saturating_add(1);
+                }
+
+                rows.push(UnifiedRenderRow {
+                    kind: *kind,
+                    old_number,
+                    new_number,
+                    sign: '~',
+                    text: text.clone(),
+                });
+            }
+        }
+    }
+
+    rows
+}
+
+fn render_unified_row(
+    row: &UnifiedRenderRow,
+    old_width: usize,
+    new_width: usize,
+    file_path: Option<&str>,
+) -> Line<'static> {
+    if row.kind == LineKind::Header {
+        return Line::styled(
+            row.text.clone(),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
+    let (sign_style, content_style, line_style) = match row.kind {
+        LineKind::Added => (
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Green),
+            Style::default().bg(DIFF_ADD_BG),
+        ),
+        LineKind::Removed => (
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red),
+            Style::default().bg(DIFF_REMOVE_BG),
+        ),
+        LineKind::Modified => (
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Yellow),
+            Style::default().bg(DIFF_MODIFIED_BG),
+        ),
+        LineKind::Unchanged => (
+            Style::default().fg(Color::DarkGray),
+            Style::default(),
+            Style::default(),
+        ),
+        LineKind::Header => unreachable!("header rows are handled above"),
+    };
+
+    let old = row.old_number.map_or_else(
+        || " ".repeat(old_width),
+        |value| format!("{value:>old_width$}"),
+    );
+    let new = row.new_number.map_or_else(
+        || " ".repeat(new_width),
+        |value| format!("{value:>new_width$}"),
+    );
+    let content_spans = highlight_text_spans(file_path, &row.text, row.kind)
+        .unwrap_or_else(|| vec![Span::styled(row.text.clone(), content_style)]);
+
+    let mut spans = vec![
+        Span::styled(old, Style::default().fg(DIFF_GUTTER_FG)),
+        Span::raw(" "),
+        Span::styled(new, Style::default().fg(DIFF_GUTTER_FG)),
+        Span::raw(" "),
+        Span::styled(format!("{} ", row.sign), sign_style),
+    ];
+    spans.extend(content_spans);
+    Line::from(spans).style(line_style)
+}
+
+fn parse_hunk_header_starts(line: &str) -> Option<(usize, usize)> {
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "@@" {
+        return None;
+    }
+
+    let old = parts.next()?;
+    let new = parts.next()?;
+    Some((parse_hunk_start(old, '-')?, parse_hunk_start(new, '+')?))
+}
+
+fn parse_hunk_start(token: &str, prefix: char) -> Option<usize> {
+    let value = token.strip_prefix(prefix)?;
+    let start = value.split(',').next()?;
+    start.parse::<usize>().ok()
+}
+
+fn strip_line_prefix(line: &str, prefix: &str) -> String {
+    line.strip_prefix(prefix).unwrap_or(line).to_string()
+}
+
+fn line_number_width(max_value: Option<usize>) -> usize {
+    max_value.unwrap_or(1).to_string().len()
+}
+
+fn diff_styles_for_kind(kind: LineKind) -> (char, Style, Style, Style) {
+    match kind {
+        LineKind::Header => (
+            ' ',
+            Style::default().fg(Color::Magenta),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+            Style::default(),
+        ),
+        LineKind::Added => (
+            '+',
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Green),
+            Style::default().bg(DIFF_ADD_BG),
+        ),
+        LineKind::Removed => (
+            '-',
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red),
+            Style::default().bg(DIFF_REMOVE_BG),
+        ),
+        LineKind::Modified => (
+            '~',
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Yellow),
+            Style::default().bg(DIFF_MODIFIED_BG),
+        ),
+        LineKind::Unchanged => (
+            ' ',
+            Style::default().fg(Color::DarkGray),
+            Style::default(),
+            Style::default(),
+        ),
+    }
+}
+
+fn render_side_by_side_row(
+    line: &super::detail::SideBySideLine,
+    half_width: usize,
+    file_path: Option<&str>,
+) -> Line<'static> {
+    let (sign, sign_style, content_style, line_style) = diff_styles_for_kind(line.kind);
+    if line.kind == LineKind::Header {
+        return Line::from(vec![
+            Span::styled(format!("{sign} "), sign_style),
+            Span::styled(
+                format_column(line.left_number, &line.left_text, half_width),
+                content_style,
+            ),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format_column(line.right_number, &line.right_text, half_width),
+                content_style,
+            ),
+        ])
+        .style(line_style);
+    }
+
+    let mut spans = vec![Span::styled(format!("{sign} "), sign_style)];
+    spans.extend(render_side_column(
+        line.left_number,
+        &line.left_text,
+        half_width,
+        file_path,
+        line.kind,
+        content_style,
+    ));
+    spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+    spans.extend(render_side_column(
+        line.right_number,
+        &line.right_text,
+        half_width,
+        file_path,
+        line.kind,
+        content_style,
+    ));
+    Line::from(spans).style(line_style)
+}
+
+fn render_side_column(
+    number: Option<usize>,
+    text: &str,
+    width: usize,
+    file_path: Option<&str>,
+    kind: LineKind,
+    fallback_style: Style,
+) -> Vec<Span<'static>> {
+    let number_text = number.map_or_else(|| "    ".to_string(), |value| format!("{value:>4}"));
+    let available = width.saturating_sub(number_text.len() + 1);
+    let truncated = if text.chars().count() > available {
+        let keep = available.saturating_sub(1);
+        let clipped: String = text.chars().take(keep).collect();
+        format!("{clipped}…")
+    } else {
+        text.to_string()
+    };
+
+    let mut spans = vec![Span::styled(
+        format!("{number_text} "),
+        Style::default().fg(DIFF_GUTTER_FG),
+    )];
+    spans.extend(
+        highlight_text_spans(file_path, &truncated, kind)
+            .unwrap_or_else(|| vec![Span::styled(truncated.clone(), fallback_style)]),
+    );
+    let pad = available.saturating_sub(truncated.chars().count());
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    spans
+}
+
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static SYNTAX_THEME: OnceLock<Theme> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn syntax_theme() -> &'static Theme {
+    SYNTAX_THEME.get_or_init(|| {
+        let themes = ThemeSet::load_defaults();
+        themes
+            .themes
+            .get("base16-ocean.dark")
+            .cloned()
+            .or_else(|| themes.themes.values().next().cloned())
+            .expect("syntect should load at least one default theme")
+    })
+}
+
+fn syntax_for_path<'a>(set: &'a SyntaxSet, file_path: Option<&str>) -> &'a SyntaxReference {
+    if let Some(path) = file_path {
+        if let Some(ext) = Path::new(path).extension().and_then(|value| value.to_str()) {
+            if let Some(syntax) = set.find_syntax_by_extension(ext) {
+                return syntax;
+            }
+        }
+    }
+    set.find_syntax_plain_text()
+}
+
+fn highlight_text_spans(
+    file_path: Option<&str>,
+    text: &str,
+    kind: LineKind,
+) -> Option<Vec<Span<'static>>> {
+    if text.is_empty() {
+        return Some(vec![Span::raw(String::new())]);
+    }
+
+    let set = syntax_set();
+    let syntax = syntax_for_path(set, file_path);
+    let mut highlighter = HighlightLines::new(syntax, syntax_theme());
+    let highlighted = highlighter.highlight_line(text, set).ok()?;
+    let spans = highlighted
+        .into_iter()
+        .map(|(style, segment)| {
+            let mut rt_style = syntect_style_to_ratatui(style);
+            if kind == LineKind::Removed {
+                rt_style = rt_style.add_modifier(Modifier::DIM);
+            }
+            Span::styled(segment.to_string(), rt_style)
+        })
+        .collect();
+    Some(spans)
+}
+
+fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
+    let mut rt_style = Style::default().fg(Color::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    ));
+    if style.font_style.contains(FontStyle::BOLD) {
+        rt_style = rt_style.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(FontStyle::ITALIC) {
+        rt_style = rt_style.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(FontStyle::UNDERLINE) {
+        rt_style = rt_style.add_modifier(Modifier::UNDERLINED);
+    }
+    rt_style
+}
+
+fn fit_cell(text: &str, width: usize) -> String {
+    let clipped = truncate_cell(text, width);
+    format!("{clipped:width$}")
+}
+
+fn fit_cell_right(text: &str, width: usize) -> String {
+    let clipped = truncate_cell(text, width);
+    format!("{clipped:>width$}")
+}
+
+fn truncate_cell(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+
+    if width == 1 {
+        return "…".to_string();
+    }
+
+    let keep = width.saturating_sub(1);
+    let clipped: String = text.chars().take(keep).collect();
+    format!("{clipped}…")
+}
+
+fn append_delta_spans(spans: &mut Vec<Span<'_>>, added: usize, removed: usize, width: usize) {
+    if width == 0 {
+        return;
+    }
+
+    if width == 1 {
+        spans.push(Span::styled(
+            fit_cell_right(&format!("+{added}"), 1),
+            Style::default().fg(Color::Green),
+        ));
+        return;
+    }
+
+    if width == 2 {
+        spans.push(Span::styled(
+            fit_cell_right(&format!("+{added}"), 1),
+            Style::default().fg(Color::Green),
+        ));
+        spans.push(Span::styled(
+            fit_cell(&format!("-{removed}"), 1),
+            Style::default().fg(Color::Red),
+        ));
+        return;
+    }
+
+    let remaining = width.saturating_sub(1);
+    let plus_width = remaining / 2;
+    let minus_width = remaining.saturating_sub(plus_width);
+    spans.push(Span::styled(
+        fit_cell_right(&format!("+{added}"), plus_width),
+        Style::default().fg(Color::Green),
+    ));
+    spans.push(Span::raw("/"));
+    spans.push(Span::styled(
+        fit_cell(&format!("-{removed}"), minus_width),
+        Style::default().fg(Color::Red),
+    ));
+}
+
+fn compute_list_column_widths(list_area_width: u16) -> ListColumnWidths {
+    let content_width = usize::from(list_area_width.saturating_sub(4));
+    let available = content_width.saturating_sub(ICON_COL_WIDTH + INTER_COL_SPACES);
+    let minimum_total = TYPE_MIN_WIDTH + ENTITY_MIN_WIDTH + CHANGE_MIN_WIDTH + DELTA_MIN_WIDTH;
+
+    let mut type_col = TYPE_MIN_WIDTH;
+    let mut entity_col = ENTITY_MIN_WIDTH;
+    let mut change_col = CHANGE_MIN_WIDTH;
+    let mut delta_col = DELTA_MIN_WIDTH;
+
+    if available >= minimum_total {
+        let mut extra = available - minimum_total;
+
+        let type_extra = extra.min(TYPE_EXTRA_MAX);
+        type_col += type_extra;
+        extra -= type_extra;
+
+        let change_extra = extra.min(CHANGE_EXTRA_MAX);
+        change_col += change_extra;
+        extra -= change_extra;
+
+        let delta_extra = extra.min(DELTA_EXTRA_MAX);
+        delta_col += delta_extra;
+        extra -= delta_extra;
+
+        entity_col += extra;
+    } else {
+        let mut overflow = minimum_total - available;
+        while overflow > 0 {
+            let before = overflow;
+
+            if entity_col > 0 {
+                entity_col -= 1;
+                overflow -= 1;
+            }
+            if overflow == 0 {
+                break;
+            }
+
+            if type_col > 0 {
+                type_col -= 1;
+                overflow -= 1;
+            }
+            if overflow == 0 {
+                break;
+            }
+
+            if change_col > 0 {
+                change_col -= 1;
+                overflow -= 1;
+            }
+            if overflow == 0 {
+                break;
+            }
+
+            if delta_col > 0 {
+                delta_col -= 1;
+                overflow -= 1;
+            }
+            if overflow == before {
+                break;
+            }
+        }
+    }
+
+    ListColumnWidths {
+        type_col,
+        entity_col,
+        change_col,
+        delta_col,
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -291,5 +886,32 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with help overlay");
+    }
+
+    #[test]
+    fn list_column_widths_use_full_available_content_width() {
+        let widths = compute_list_column_widths(120);
+        let content_width = usize::from(120_u16.saturating_sub(4));
+        let used = ICON_COL_WIDTH
+            + INTER_COL_SPACES
+            + widths.type_col
+            + widths.entity_col
+            + widths.change_col
+            + widths.delta_col;
+        assert_eq!(used, content_width);
+        assert!(widths.entity_col > ENTITY_MIN_WIDTH);
+    }
+
+    #[test]
+    fn list_column_widths_shrink_safely_for_narrow_layouts() {
+        let widths = compute_list_column_widths(40);
+        let content_width = usize::from(40_u16.saturating_sub(4));
+        let used = ICON_COL_WIDTH
+            + INTER_COL_SPACES
+            + widths.type_col
+            + widths.entity_col
+            + widths.change_col
+            + widths.delta_col;
+        assert_eq!(used, content_width);
     }
 }

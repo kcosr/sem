@@ -3,6 +3,7 @@ mod detail;
 mod render;
 
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{self, DisableMouseCapture, Event};
@@ -26,6 +27,7 @@ pub fn run_tui(result: &DiffResult, initial_view: DiffView) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
+    app_state.set_list_header_command(invoked_command_line());
     if let Ok(size) = terminal.size() {
         app_state.set_viewport(size.width, size.height);
     }
@@ -50,6 +52,27 @@ pub fn run_tui(result: &DiffResult, initial_view: DiffView) -> io::Result<()> {
     Ok(())
 }
 
+fn invoked_command_line() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    format_invoked_command(&args)
+}
+
+fn format_invoked_command(args: &[String]) -> String {
+    if args.is_empty() {
+        return "sem diff --tui".to_string();
+    }
+
+    let executable = Path::new(&args[0])
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(|| args[0].clone(), ToString::to_string);
+
+    std::iter::once(executable)
+        .chain(args.iter().skip(1).cloned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -57,5 +80,25 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
         let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_invoked_command;
+
+    #[test]
+    fn format_invoked_command_uses_executable_basename() {
+        let args = vec![
+            "/home/kevin/worktrees/sem/crates/target/debug/sem".to_string(),
+            "diff".to_string(),
+            "--tui".to_string(),
+            "--diff-view".to_string(),
+            "side-by-side".to_string(),
+        ];
+        assert_eq!(
+            format_invoked_command(&args),
+            "sem diff --tui --diff-view side-by-side"
+        );
     }
 }

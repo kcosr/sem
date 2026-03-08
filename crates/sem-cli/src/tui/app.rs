@@ -1,6 +1,7 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sem_core::model::change::SemanticChange;
 use sem_core::parser::differ::DiffResult;
+use similar::{ChangeTag, TextDiff};
 
 use crate::commands::diff::DiffView;
 
@@ -13,7 +14,8 @@ pub struct EntityRow {
     pub file_path: String,
     pub entity_type: String,
     pub entity_name: String,
-    pub change_type: String,
+    pub added_lines: usize,
+    pub removed_lines: usize,
     pub range_label: Option<String>,
     pub change: SemanticChange,
 }
@@ -27,6 +29,7 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
+    list_header_command: String,
     selected: usize,
     mode: Mode,
     requested_view: DiffView,
@@ -47,18 +50,23 @@ impl AppState {
 
         let rows = changes
             .into_iter()
-            .map(|change| EntityRow {
-                file_path: change.file_path.clone(),
-                entity_type: change.entity_type.clone(),
-                entity_name: change.entity_name.clone(),
-                change_type: change.change_type.to_string(),
-                range_label: range_label(&change),
-                change,
+            .map(|change| {
+                let (added_lines, removed_lines) = change_line_counts(&change);
+                EntityRow {
+                    file_path: change.file_path.clone(),
+                    entity_type: change.entity_type.clone(),
+                    entity_name: change.entity_name.clone(),
+                    added_lines,
+                    removed_lines,
+                    range_label: range_label(&change),
+                    change,
+                }
             })
             .collect();
 
         Self {
             rows,
+            list_header_command: "sem diff --tui".to_string(),
             selected: 0,
             mode: Mode::List,
             requested_view: initial_view,
@@ -79,6 +87,14 @@ impl AppState {
 
     pub fn rows(&self) -> &[EntityRow] {
         &self.rows
+    }
+
+    pub fn set_list_header_command(&mut self, command: String) {
+        self.list_header_command = command;
+    }
+
+    pub fn list_header_command(&self) -> &str {
+        &self.list_header_command
     }
 
     pub fn selected(&self) -> usize {
@@ -148,6 +164,11 @@ impl AppState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
         if self.show_help {
             match key.code {
                 KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
@@ -185,6 +206,8 @@ impl AppState {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Esc => self.close_detail(),
+            KeyCode::Left => self.previous_entity(),
+            KeyCode::Right => self.next_entity(),
             KeyCode::Tab => self.toggle_view(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
@@ -221,13 +244,42 @@ impl AppState {
     }
 
     fn open_detail(&mut self) {
+        self.mode = Mode::Detail;
+        self.refresh_detail();
+    }
+
+    fn next_entity(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+
+        self.selected = (self.selected + 1) % self.rows.len();
+        self.refresh_detail();
+    }
+
+    fn previous_entity(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+
+        if self.selected == 0 {
+            self.selected = self.rows.len() - 1;
+        } else {
+            self.selected -= 1;
+        }
+        self.refresh_detail();
+    }
+
+    fn refresh_detail(&mut self) {
         if let Some(row) = self.rows.get(self.selected) {
             self.detail = Some(render_change(&row.change));
-            self.mode = Mode::Detail;
-            self.detail_scroll = 0;
-            self.detail_hunk_index = 0;
-            self.jump_to_hunk();
+        } else {
+            self.detail = None;
         }
+
+        self.detail_scroll = 0;
+        self.detail_hunk_index = 0;
+        self.jump_to_hunk();
     }
 
     fn close_detail(&mut self) {
@@ -344,6 +396,39 @@ fn range_label(change: &SemanticChange) -> Option<String> {
     }
 }
 
+fn change_line_counts(change: &SemanticChange) -> (usize, usize) {
+    let before = change.before_content.as_deref().unwrap_or("");
+    let after = change.after_content.as_deref().unwrap_or("");
+    if before.is_empty() && after.is_empty() {
+        return (0, 0);
+    }
+
+    let diff = TextDiff::from_lines(before, after);
+    let mut added: usize = 0;
+    let mut removed: usize = 0;
+
+    for op in diff.ops() {
+        for diff_change in diff.iter_changes(op) {
+            match diff_change.tag() {
+                ChangeTag::Insert => {
+                    added = added.saturating_add(changed_line_count(diff_change.value()));
+                }
+                ChangeTag::Delete => {
+                    removed = removed.saturating_add(changed_line_count(diff_change.value()));
+                }
+                ChangeTag::Equal => {}
+            }
+        }
+    }
+
+    (added, removed)
+}
+
+fn changed_line_count(text: &str) -> usize {
+    let newline_count = text.chars().filter(|character| *character == '\n').count();
+    newline_count.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,10 +495,25 @@ mod tests {
     }
 
     #[test]
+    fn rows_include_added_and_removed_counts() {
+        let app = app();
+        assert_eq!(app.rows()[0].added_lines, 2);
+        assert_eq!(app.rows()[0].removed_lines, 2);
+    }
+
+    #[test]
     fn app_state_quits_with_q() {
         let mut app = app();
         assert!(!app.should_quit());
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn app_state_quits_with_ctrl_c() {
+        let mut app = app();
+        assert!(!app.should_quit());
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit());
     }
 
@@ -494,5 +594,21 @@ mod tests {
         assert!(app.detail_scroll() >= start);
         app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
         assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn detail_mode_left_and_right_cycle_entities() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("alpha"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("beta"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("alpha"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("beta"));
     }
 }
