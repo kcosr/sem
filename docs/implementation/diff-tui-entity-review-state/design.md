@@ -24,8 +24,10 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 
 ## 5. Current Baseline
 1. TUI supports entity navigation, detail mode, and commit/range stepping.
-2. No reviewed metadata exists in app state or on disk.
-3. List rendering groups entities by file and supports selection-based navigation.
+2. Unified stepping model provides `pairwise`/`cumulative` modes with comparator endpoint semantics and mode indicator/footer token.
+3. Unified endpoint paths can include commits plus synthetic `INDEX` and `WORKING` endpoints.
+4. No reviewed metadata exists in app state or on disk.
+5. List rendering groups entities by file and supports selection-based navigation.
 
 ## 6. Key Decisions
 1. Reviewed state is entity-level only in v1.
@@ -72,6 +74,15 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 15. Cross-range/mode behavior:
    - reviewed status is shown whenever identity key matches
    - no automatic relevance suppression in v1
+16. Review-state behavior is orthogonal to stepping:
+   - `Space`/filter actions do not modify step cursor, step mode, or comparator endpoint selection
+   - `[`/`]` and `m` behavior stays unchanged
+17. Hash source lock under unified stepping:
+   - `targetContentHash` uses active comparator target endpoint content (`comparison.toEndpointId`)
+   - valid target endpoint kinds include commit endpoint IDs, `index`, and `working`
+18. Footer composition lock:
+   - preserve existing step-mode indicator token
+   - append review filter indicator without removing step-mode token
 
 ## 7. Contract / Interface Semantics
 This is a CLI/TUI contract (not HTTP).
@@ -81,6 +92,7 @@ This is a CLI/TUI contract (not HTTP).
 2. `r` (proposed): cycle filter state.
 3. Existing navigation keys remain unchanged.
 4. In detail mode, `Space` applies to the currently opened entity.
+5. Stepping/mode keys (`[`/`]`, `m`) remain unchanged and independent of review actions.
 
 ### 7.2 Filter Contract
 1. `all`: show every entity.
@@ -100,10 +112,11 @@ This is a CLI/TUI contract (not HTTP).
    - add toggle/filter actions and visible-row projection
 2. `tui/render.rs`
    - add reviewed marker in rows
-   - add filter status in footer
+   - add filter status in footer while preserving existing step-mode token
    - render filtered-empty state
 3. `commands/diff.rs` / TUI controller
-   - compute target content hash for focused row from current comparator target content
+   - compute target content hash for focused row from current comparator target endpoint content
+   - support comparator target endpoint IDs across commit/index/working
 4. persistence module (new)
    - load/save `.sem/tui-review-state.json`
    - schema version checks + migration hook entry point
@@ -143,6 +156,9 @@ This is a CLI/TUI contract (not HTTP).
    - global filtered-empty state
 5. Scale smoke:
    - load/save responsiveness with `>=10,000` records.
+6. Unified stepping compatibility tests:
+   - reviewed carryover behavior in both `pairwise` and `cumulative` modes
+   - reviewed carryover behavior when comparator target endpoint is commit/index/working
 
 ## 12. Acceptance Criteria
 1. Operator can toggle reviewed state with `Space` from list and detail.

@@ -19,7 +19,7 @@ Define an internal persistence and runtime contract for entity-level reviewed st
   "source": {
     "mode": "cumulative",
     "fromEndpointId": "commit:1111111...",
-    "toEndpointId": "commit:5555555..."
+    "toEndpointId": "working"
   }
 }
 ```
@@ -106,12 +106,19 @@ Define an internal persistence and runtime contract for entity-level reviewed st
 3. Persistence path is `.sem/tui-review-state.json`.
 4. Persistence scope is local repo only.
 5. Record presence means reviewed; unreview removes record.
+6. `targetContentHash` is derived from active comparator target endpoint content (`toEndpointId`) in current step snapshot.
+7. Valid comparator endpoint ID kinds for review hashing are:
+   - `commit:<sha>`
+   - `index`
+   - `working`
+8. Review toggle/filter actions never mutate step cursor, step mode, or comparator endpoint IDs.
 
 ## 5. Deterministic Reject / Status Lock
 1. Corrupt persistence file => ignore file, keep session usable, show non-fatal status.
 2. Unsupported schema version => ignore file with non-fatal status.
 3. Repo ID mismatch => ignore file with non-fatal status.
 4. Missing hash material => entity cannot be matched to stored reviewed state for that render cycle.
+5. Unknown comparator endpoint kind for hash source => treat as missing hash material (non-fatal).
 
 ## 6. Notes
 1. `logicalEntityKey` grammar (from design lock):
@@ -122,3 +129,4 @@ Define an internal persistence and runtime contract for entity-level reviewed st
 4. This schema is internal; no external JSON API contract changes.
 5. Hunk-level review state and annotations are out of scope for this topic.
 6. Cursor/range resume restoration is deferred.
+7. Footer rendering with review filter indicator must preserve existing step-mode indicator token from unified stepping.

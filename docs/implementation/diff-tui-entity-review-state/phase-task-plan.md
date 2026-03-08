@@ -4,16 +4,17 @@
 Locked
 
 ## 1. Scope
-Deliver entity-level reviewed toggling, reviewed/unreviewed filtering, deterministic navigation under filtered views, and persistent local review-state metadata.
+Deliver entity-level reviewed toggling, reviewed/unreviewed filtering, deterministic navigation under filtered views, and persistent local review-state metadata while preserving unified-stepping behavior and footer contracts.
 
 ## 2. Global Rules
 1. Execute phases in strict order: `H0 -> H1 -> H2 -> H3`.
 2. Preserve existing non-TUI and existing TUI diff semantics.
 3. Keep entity-level scope only (no hunk-level review state).
 4. Keep all persistence failures non-fatal.
-5. Run 2 independent external reviews in authoring stage (Gemini + PI).
-6. Triage each finding as `accept`, `defer`, or `reject`.
-7. Section 9 evidence updates are mandatory.
+5. Preserve unified stepping semantics (`[`/`]`, `m`, comparator endpoints, and step-mode indicator token).
+6. Run 2 independent external reviews in authoring stage (Gemini + PI).
+7. Triage each finding as `accept`, `defer`, or `reject`.
+8. Section 9 evidence updates are mandatory.
 
 ## 3. Phases, Deliverables, Acceptance
 
@@ -24,6 +25,7 @@ Deliverables:
 3. Lock filter/no-match navigation behavior.
 4. Lock persistence file path/shape and error semantics.
 5. Lock `logicalEntityKey` grammar and `targetContentHash` normalization.
+6. Lock comparator-target hash source semantics for commit/index/working endpoints.
 
 Acceptance:
 1. No ambiguity on reviewed identity key semantics.
@@ -54,6 +56,7 @@ Deliverables:
 3. Render reviewed markers.
 4. Filtered list projection with file-header suppression and global no-match row.
 5. Navigation skips hidden rows and no-ops when none visible.
+6. Preserve step-mode footer token while adding review filter indicator.
 
 Acceptance:
 1. Toggle/filter behavior deterministic in both list and detail modes.
@@ -84,6 +87,8 @@ Gate:
 | filter cycle state | app tests | filter state reducer assertions |
 | hidden-row navigation | app tests | skip/no-op behavior assertions |
 | reviewed identity carryover | unit/integration | identity+hash match/mismatch tests |
+| stepping compatibility | unit/integration | pairwise/cumulative carryover invariants |
+| endpoint-kind compatibility | unit/integration | comparator target endpoint commit/index/working coverage |
 | fallback identity key | unit tests | fallback key grammar + ordinal tests |
 | deleted entity handling | unit/integration | deleted-content hash + carryover tests |
 | persistence behavior | unit tests | missing/corrupt/version/repo mismatch + atomic write tests |
@@ -112,6 +117,8 @@ Gate:
 - Mitigation: strict identity+hash matching only.
 5. Risk: unbounded state growth.
 - Mitigation: startup compaction + max-record cap.
+6. Risk: review UI changes regress unified-stepping footer semantics.
+- Mitigation: explicit footer composition contract + render regression tests.
 
 ## 7. Deferred Items
 1. Hunk-level review state.
@@ -197,6 +204,18 @@ Gate:
 - Go/No-Go: GO
 - Notes:
   - review completion confirmed from live session stream terminal events (`result.completed`).
+
+### 9.4 Post-Lock Alignment Amendment
+- Completion date: 2026-03-08
+- Commit hash(es): pending
+- Acceptance evidence:
+  - cross-checked this spec set against post-H3 unified-stepping contracts (`pairwise`/`cumulative`, commit/index/working endpoints, and footer mode indicator requirements).
+  - amended design/plan/schema to preserve stepping semantics and define comparator-target hash source across endpoint kinds.
+- Review run IDs + triage outcomes:
+  - N/A (alignment-only amendment; no contract-scope expansion beyond compatibility clarifications)
+- Go/No-Go: GO
+- Notes:
+  - changes are compatibility clarifications and do not alter review-state feature scope or persistence schema version.
 
 ## 10. Execution Handoff Contract
 1. Required read order:
