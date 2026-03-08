@@ -207,7 +207,7 @@ Gate:
 
 ### 9.4 H0 Evidence
 - Completion date: 2026-03-08
-- Commit hash(es): PENDING (to be recorded after H0 milestone commit)
+- Commit hash(es): `af0cda88e7f9d88af794f0ef01574cd0f9a0fafc`
 - Acceptance evidence:
   - manual: cross-checked `schema-proposal.md`, `design.md`, and `phase-task-plan.md` for H0 contract consistency and removed side-by-side anchor ambiguity.
   - docs update: locked anchor coordinate space as 0-based rendered row indices in both unified and side-by-side render streams.
