@@ -30,6 +30,7 @@ const DIFF_REMOVE_BG: Color = Color::Rgb(74, 34, 29);
 const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
 const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
 const DIFF_HUNK_FG: Color = Color::Gray;
+const FOOTER_CELL_SEPARATOR: &str = " | ";
 
 #[derive(Clone, Copy, Debug)]
 struct ListColumnWidths {
@@ -46,6 +47,28 @@ struct UnifiedRenderRow {
     new_number: Option<usize>,
     sign: char,
     text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FooterCell {
+    key: char,
+    value: String,
+}
+
+impl FooterCell {
+    fn new(key: char, value: impl Into<String>) -> Self {
+        Self {
+            key,
+            value: value.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FooterParts {
+    controls: String,
+    cells: Vec<FooterCell>,
+    status: Option<String>,
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
@@ -165,14 +188,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     state.select(selectable_indices.get(selected).copied());
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
-    let mut footer =
-        "Controls: ↑/↓ j/k move, Enter open, [/] step, m mode, g/G jump, ? help, q/Ctrl+c quit"
-            .to_string();
-    footer.push_str(&format!(" | mode: {}", app.step_mode().as_token()));
-    if !app.commit_navigation_enabled() {
-        footer.push_str(" | stepping disabled");
-    }
-    draw_footer(frame, chunks[2], &footer, app.commit_loading());
+    let footer = list_footer_parts(app);
+    draw_footer(frame, chunks[2], &footer);
 }
 
 fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
@@ -242,38 +259,135 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
         }
     }
 
-    let mut footer =
-        "Controls: Esc list, [/] step, m mode, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
-            .to_string();
-    footer.push_str(&format!(" | mode: {}", app.step_mode().as_token()));
-    if app.fallback_active() {
-        footer.push_str(" | width too narrow for side-by-side, showing unified");
-    }
-    if !app.commit_navigation_enabled() {
-        footer.push_str(" | stepping disabled");
-    } else if let Some(message) = app.commit_status_message() {
-        footer.push_str(&format!(" | {message}"));
-    }
-
-    draw_footer(frame, chunks[2], &footer, app.commit_loading());
+    let footer = detail_footer_parts(app);
+    draw_footer(frame, chunks[2], &footer);
 }
 
-fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &str, loading: bool) {
-    if !loading {
-        frame.render_widget(Paragraph::new(footer), area);
+fn list_footer_parts(app: &AppState) -> FooterParts {
+    let mut controls =
+        "Controls: ↑/↓ j/k move, Enter open, [/] step, m mode, g/G jump, ? help, q/Ctrl+c quit"
+            .to_string();
+    if !app.commit_navigation_enabled() {
+        controls.push_str(" | stepping disabled");
+    }
+
+    FooterParts {
+        controls,
+        cells: vec![FooterCell::new('m', app.step_mode().as_token())],
+        status: footer_status_message(app.commit_loading(), None),
+    }
+}
+
+fn detail_footer_parts(app: &AppState) -> FooterParts {
+    let mut controls =
+        "Controls: Esc list, [/] step, m mode, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+            .to_string();
+    if app.fallback_active() {
+        controls.push_str(" | width too narrow for side-by-side, showing unified");
+    }
+    if !app.commit_navigation_enabled() {
+        controls.push_str(" | stepping disabled");
+    }
+
+    FooterParts {
+        controls,
+        cells: vec![FooterCell::new('m', app.step_mode().as_token())],
+        status: footer_status_message(app.commit_loading(), app.commit_status_message()),
+    }
+}
+
+fn footer_status_message(loading: bool, status: Option<&str>) -> Option<String> {
+    if loading {
+        return Some("Loading...".to_string());
+    }
+    status
+        .filter(|message| !message.is_empty())
+        .map(ToString::to_string)
+}
+
+fn render_footer_cells(cells: &[FooterCell]) -> String {
+    let mut mode_value: Option<&str> = None;
+    let mut review_value: Option<&str> = None;
+    let mut entity_value: Option<&str> = None;
+
+    for cell in cells {
+        match cell.key {
+            'm' if mode_value.is_none() => mode_value = Some(cell.value.as_str()),
+            'r' if review_value.is_none() => review_value = Some(cell.value.as_str()),
+            'e' if entity_value.is_none() => entity_value = Some(cell.value.as_str()),
+            _ => {}
+        }
+    }
+
+    let mut rendered = vec![format!("m: {}", mode_value.unwrap_or("pairwise"))];
+    if let Some(value) = review_value {
+        rendered.push(format!("r: {value}"));
+    }
+    if let Some(value) = entity_value {
+        rendered.push(format!("e: {value}"));
+    }
+    rendered.join(FOOTER_CELL_SEPARATOR)
+}
+
+fn footer_layout_widths(
+    total_width: usize,
+    cell_text: &str,
+    status_text: Option<&str>,
+) -> (usize, usize, usize) {
+    let cell_width = cell_text.chars().count().min(total_width);
+    let remaining = total_width.saturating_sub(cell_width);
+    let status_width = status_text
+        .map(|text| {
+            if remaining <= 1 {
+                0
+            } else {
+                (text.chars().count() + 1).min(remaining)
+            }
+        })
+        .unwrap_or(0);
+    let controls_width = total_width.saturating_sub(cell_width + status_width);
+    (controls_width, cell_width, status_width)
+}
+
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &FooterParts) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
+    let cell_text = render_footer_cells(&footer.cells);
+    let status_text = footer.status.as_deref();
+    let (controls_width, cell_width, status_width) =
+        footer_layout_widths(usize::from(area.width), &cell_text, status_text);
+
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(11)])
+        .constraints([
+            Constraint::Length(controls_width as u16),
+            Constraint::Length(cell_width as u16),
+            Constraint::Length(status_width as u16),
+        ])
         .split(area);
 
-    frame.render_widget(Paragraph::new(footer), footer_chunks[0]);
-    frame.render_widget(
-        Paragraph::new("Loading...").alignment(Alignment::Right),
-        footer_chunks[1],
-    );
+    if controls_width > 0 {
+        frame.render_widget(
+            Paragraph::new(fit_cell(&footer.controls, controls_width)),
+            footer_chunks[0],
+        );
+    }
+    if cell_width > 0 {
+        frame.render_widget(
+            Paragraph::new(fit_cell_right(&cell_text, cell_width)),
+            footer_chunks[1],
+        );
+    }
+    if status_width > 0 {
+        if let Some(text) = status_text {
+            frame.render_widget(
+                Paragraph::new(fit_cell_right(&format!(" {text}"), status_width)),
+                footer_chunks[2],
+            );
+        }
+    }
 }
 
 fn context_header_line(app: &AppState, width: u16) -> String {
@@ -1175,6 +1289,82 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with comparator header");
+    }
+
+    #[test]
+    fn list_footer_parts_include_mode_cell() {
+        let app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let footer = list_footer_parts(&app);
+        assert_eq!(render_footer_cells(&footer.cells), "m: pairwise");
+        assert_eq!(footer.status, None);
+    }
+
+    #[test]
+    fn detail_footer_parts_include_cumulative_mode_cell() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:a".to_string(),
+                display_ref: Some("HEAD~1".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "a".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:b".to_string(),
+                display_ref: Some("HEAD".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "b".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:a".to_string(), 0usize),
+            ("commit:b".to_string(), 1usize),
+        ]);
+        app.configure_commit_navigation(
+            TuiSourceMode::Unified,
+            endpoints,
+            endpoint_index,
+            Some(CommitCursor {
+                endpoint_id: "commit:b".to_string(),
+                index: 1,
+                rev_label: Some("HEAD".to_string()),
+                sha: "b".to_string(),
+                subject: "subject".to_string(),
+                has_older: true,
+                has_newer: false,
+            }),
+            StepMode::Cumulative,
+            Some("commit:a".to_string()),
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let footer = detail_footer_parts(&app);
+        assert_eq!(render_footer_cells(&footer.cells), "m: cumulative");
+    }
+
+    #[test]
+    fn detail_footer_loading_status_keeps_mode_cell_value() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let baseline = detail_footer_parts(&app);
+        assert_eq!(render_footer_cells(&baseline.cells), "m: pairwise");
+
+        app.set_commit_loading(true);
+        let loading = detail_footer_parts(&app);
+        assert_eq!(render_footer_cells(&loading.cells), "m: pairwise");
+        assert_eq!(loading.status.as_deref(), Some("Loading..."));
+    }
+
+    #[test]
+    fn footer_layout_widths_reserve_separator_for_status_slot() {
+        let (controls_width, cell_width, status_width) =
+            footer_layout_widths(30, "m: pairwise", Some("Loading..."));
+        assert_eq!(cell_width, "m: pairwise".chars().count());
+        assert!(status_width > 0);
+        assert_eq!(controls_width + cell_width + status_width, 30);
     }
 
     #[test]
