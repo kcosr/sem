@@ -308,6 +308,40 @@ Gate:
   - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external quota/runtime reasons and fallback is documented here.
   - H2 gate requirement is satisfied via endpoint tests plus scripted localhost verification.
 
+### 9.7 H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `89999e6`
+- Acceptance evidence:
+  - `npm run lint` => `NO-GO` for existing JS/TS workspace baseline in current environment (missing Node/module typings and dependency resolution; unrelated to H3 Rust TUI scope).
+  - `npm test` => `NO-GO` in current environment (`vitest` binary unavailable).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (`149 passed, 0 failed`), including H3-focused coverage:
+    - app-state lifecycle for `i` toggle and reset on detail exit,
+    - panel persistence while navigating inside detail mode,
+    - render summary token presence in detail header,
+    - render expanded panel bounds with `+N more`,
+    - render empty/unavailable expanded panel placeholders,
+    - payload sync for list/detail transitions and `panel.expanded` state in TUI snapshot wiring.
+  - manual UX verification:
+    - verified detail-mode control surface now advertises `i` toggle (footer/help text),
+    - verified expanded panel layout and summary lines through terminal-buffer render assertions in dedicated H3 tests.
+- Review run IDs + triage outcomes:
+  - `r_20260308233648977_514c4ec4` (`generic-gemini`) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308233700917_e8516c71` (`generic-gemini`, retry) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308233711002_3578421c` (`generic-pi`):
+    - `accept`:
+      - add panel-state regression coverage across detail navigation (`expanded_panel_persists_while_navigating_in_detail_mode`),
+      - add unavailable-graph expanded panel render coverage (`draw_expanded_panel_shows_none_rows_when_graph_is_unavailable`),
+      - add payload transition coverage for list/detail/panel-expanded synchronization (`snapshot_tracks_panel_expanded_across_list_detail_transitions`).
+    - `defer`:
+      - lock/document panel height allocation and overflow arithmetic details to H4 docs/finalization scope,
+      - performance hardening for per-loop snapshot recomputation to H4 hardening scope.
+    - `reject`:
+      - reclassifying H3 as non-delivery due prior scaffolding, because phase acceptance is based on current behavior/tests and is satisfied by implemented controls and coverage.
+- Go/No-Go: GO
+- Notes:
+  - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external quota/runtime reasons and fallback is documented here.
+  - H3 gate requirement is satisfied via render + app-state tests and recorded UX verification artifacts.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-http-state-impact-panel/schema-proposal.md`
