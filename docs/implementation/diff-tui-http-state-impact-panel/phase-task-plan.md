@@ -342,6 +342,39 @@ Gate:
   - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external quota/runtime reasons and fallback is documented here.
   - H3 gate requirement is satisfied via render + app-state tests and recorded UX verification artifacts.
 
+### 9.8 H4 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `c955eb1`
+- Acceptance evidence:
+  - `npm run lint` => `NO-GO` for existing JS/TS workspace baseline in current environment (missing Node/module typings and dependency resolution; unrelated to H4 Rust/docs scope).
+  - `npm test` => `NO-GO` in current environment (`vitest` binary unavailable).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (`151 passed, 0 failed`), including H4 hardening additions:
+    - `impact_snapshot_reports_zero_for_leaf_entity`,
+    - `build_state_snapshot_serializes_source_mode_tokens`.
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (`41 passed, 0 failed`).
+  - manual/docs:
+    - `README.md` now documents `--tui-http`, `--tui-http-port`, `e`/`i` controls, and expanded impact panel layout bounds/overflow behavior.
+    - `docs/llms.txt` now documents TUI HTTP endpoint semantics and detail-mode impact panel control.
+    - `CHANGELOG.md` now records the HTTP state endpoint and expandable impact panel milestone coverage.
+- Review run IDs + triage outcomes:
+  - `r_20260308234422778_73142f33` (`generic-gemini`) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308234434393_34470647` (`generic-gemini`, retry) => `failed` (`result.failed`, Gemini `TerminalQuotaError`).
+  - `r_20260308234444158_afc639b2` (`generic-pi`):
+    - `accept`:
+      - close docs-alignment gap by updating `docs/llms.txt` with `--tui-http` and `/state` + panel control behavior,
+      - add explicit `session.sourceMode` serialization assertions for `repository|stdin|twoFile`,
+      - document panel height allocation/overflow behavior in user docs (`README.md`).
+    - `defer`:
+      - static-site artifact sync (`docs/index.html`, `docs/changelog.html`) to docs publishing workflow outside this phase scope,
+      - concurrent HTTP-read stress benchmarking and per-loop snapshot perf profiling to future hardening scope (already represented in deferred items).
+    - `reject`:
+      - creating `docs/reference/architecture.md` and `docs/implementation/implementation-plan.md` solely for this phase, since both paths are absent/retired in this repository and equivalent milestone status is recorded in Section 9.
+- Go/No-Go: GO
+- Notes:
+  - mandatory two-review policy was attempted with one retry on Gemini per execution policy; Gemini remained unavailable due external quota/runtime failure and fallback is documented here.
+  - PI review completion was validated from live stream terminal event `result.completed`.
+  - finalization-doc defaults (`docs/reference/architecture.md`, `docs/implementation/implementation-plan.md`) are absent in this repository; H4 closure is recorded via this ledger plus canonical user docs/changelog surfaces.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-http-state-impact-panel/schema-proposal.md`
