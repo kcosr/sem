@@ -456,9 +456,21 @@ impl AppState {
         }
     }
 
-    #[cfg(test)]
     pub fn detail_hunk_index(&self) -> usize {
         self.detail_hunk_index
+    }
+
+    pub fn detail_anchor_state(&self) -> [usize; 2] {
+        if self.mode != Mode::Detail {
+            return [0, 0];
+        }
+
+        let total = self.hunk_positions().len();
+        if total == 0 {
+            [0, 0]
+        } else {
+            [self.detail_hunk_index.saturating_add(1).min(total), total]
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -1171,11 +1183,17 @@ mod tests {
             DiffView::Unified,
         );
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+        assert_eq!(
+            app.unified_lines().first().map(|line| line.1.as_str()),
+            Some("content unavailable")
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
-        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+        assert_eq!(
+            app.unified_lines().first().map(|line| line.1.as_str()),
+            Some("content unavailable")
+        );
         assert_eq!(app.mode(), Mode::Detail);
     }
 

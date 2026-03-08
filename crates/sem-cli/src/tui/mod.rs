@@ -10,6 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chrono::{SecondsFormat, Utc};
 use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,14 +26,29 @@ use crate::commands::diff::{
     StepMode, StepNavigationBootstrap, TuiSourceMode,
 };
 use app::PendingNavigationRequest;
+use http_state::{
+    build_state_snapshot, replace_shared_snapshot, shared_state, GraphSelection,
+    GraphSnapshotService, HttpSourceMode, HttpStateServer, SnapshotSelectionInput,
+    SnapshotSessionInput, SnapshotUiInput,
+};
 use review_state::ReviewStateStoreInit;
 
 const REVIEW_STATE_DEBOUNCE_MS: u64 = 500;
+
+#[derive(Clone, Debug)]
+pub struct TuiRuntimeOptions {
+    pub http_enabled: bool,
+    pub http_port: u16,
+    pub source_mode: HttpSourceMode,
+    pub cwd: String,
+    pub file_exts: Vec<String>,
+}
 
 pub fn run_tui(
     result: &DiffResult,
     initial_view: DiffView,
     navigation_bootstrap: Option<StepNavigationBootstrap>,
+    runtime_options: TuiRuntimeOptions,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -76,6 +92,47 @@ pub fn run_tui(
         cursor,
         mode,
         base_endpoint_id,
+    );
+    let graph_snapshot_service = GraphSnapshotService::new(
+        &runtime_options.cwd,
+        &runtime_options.file_exts,
+        runtime_options.source_mode,
+    );
+    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let initial_session = SnapshotSessionInput {
+        http_enabled: runtime_options.http_enabled,
+        http_bound: false,
+        host: "127.0.0.1".to_string(),
+        port: runtime_options.http_port,
+        source_mode: runtime_options.source_mode,
+        started_at: started_at.clone(),
+    };
+    let initial_snapshot =
+        build_snapshot(&app_state, &graph_snapshot_service, &initial_session, false);
+    let shared_http_state = shared_state(initial_snapshot);
+    let mut http_server = HttpStateServer::start(
+        runtime_options.http_enabled,
+        runtime_options.http_port,
+        shared_http_state.clone(),
+    );
+    let session = SnapshotSessionInput {
+        http_enabled: http_server.enabled(),
+        http_bound: http_server.bound(),
+        host: http_server.host().to_string(),
+        port: http_server.port(),
+        source_mode: runtime_options.source_mode,
+        started_at,
+    };
+    if runtime_options.http_enabled && !http_server.bound() {
+        if let Some(error) = http_server.bind_error() {
+            app_state.set_review_status_message(Some(format!(
+                "tui-http unavailable on localhost: {error}"
+            )));
+        }
+    }
+    replace_shared_snapshot(
+        &shared_http_state,
+        build_snapshot(&app_state, &graph_snapshot_service, &session, false),
     );
     let review_cwd = context.cwd.clone();
     let mut reload_coordinator = ReloadCoordinator::new(context);
@@ -182,6 +239,11 @@ pub fn run_tui(
                 review_save_deadline = None;
             }
         }
+
+        replace_shared_snapshot(
+            &shared_http_state,
+            build_snapshot(&app_state, &graph_snapshot_service, &session, false),
+        );
     }
 
     if let Some(snapshot) = app_state.take_review_state_dirty_snapshot() {
@@ -195,9 +257,96 @@ pub fn run_tui(
         }
     }
 
+    http_server.shutdown();
     drop(guard);
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn build_snapshot(
+    app_state: &app::AppState,
+    graph_snapshot_service: &GraphSnapshotService,
+    session: &SnapshotSessionInput,
+    panel_expanded: bool,
+) -> http_state::HttpStateSnapshot {
+    let (selection, graph_selection) = snapshot_inputs_from_app_state(app_state);
+    let graph_impact = graph_snapshot_service.snapshot_for_selection(graph_selection.as_ref());
+    build_state_snapshot(session, selection, &graph_impact, panel_expanded)
+}
+
+fn snapshot_inputs_from_app_state(
+    app_state: &app::AppState,
+) -> (SnapshotSelectionInput, Option<GraphSelection>) {
+    let ui = SnapshotUiInput {
+        mode: mode_token(app_state.mode()).to_string(),
+        view: view_token(app_state.effective_view()).to_string(),
+        context_mode: app_state.entity_context_mode().as_token().to_string(),
+        hunk_index: app_state.detail_hunk_index(),
+        scroll: app_state.detail_scroll(),
+        anchors: app_state.detail_anchor_state(),
+    };
+
+    let Some(row) = app_state.selected_row() else {
+        return (
+            SnapshotSelectionInput {
+                selected: false,
+                file: None,
+                entity_type: None,
+                entity_name: None,
+                line_range: None,
+                ui,
+            },
+            None,
+        );
+    };
+
+    let line_range = row_line_range(row);
+    let graph_id = (!row.change.entity_id.is_empty()).then(|| row.change.entity_id.clone());
+
+    (
+        SnapshotSelectionInput {
+            selected: true,
+            file: Some(row.file_path.clone()),
+            entity_type: Some(row.entity_type.clone()),
+            entity_name: Some(row.entity_name.clone()),
+            line_range,
+            ui,
+        },
+        Some(GraphSelection {
+            graph_id,
+            file: row.file_path.clone(),
+            entity_type: row.entity_type.clone(),
+            entity_name: row.entity_name.clone(),
+            line_range,
+        }),
+    )
+}
+
+fn row_line_range(row: &app::EntityRow) -> Option<[usize; 2]> {
+    match (
+        row.change.after_start_line,
+        row.change.after_end_line,
+        row.change.before_start_line,
+        row.change.before_end_line,
+    ) {
+        (Some(start), Some(end), _, _) => Some([start.min(end), start.max(end)]),
+        (_, _, Some(start), Some(end)) => Some([start.min(end), start.max(end)]),
+        _ => None,
+    }
+}
+
+fn mode_token(mode: app::Mode) -> &'static str {
+    match mode {
+        app::Mode::List => "list",
+        app::Mode::Detail => "detail",
+    }
+}
+
+fn view_token(view: DiffView) -> &'static str {
+    match view {
+        DiffView::Unified => "unified",
+        DiffView::SideBySide => "sideBySide",
+    }
 }
 
 struct ReloadCoordinator {

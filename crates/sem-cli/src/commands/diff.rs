@@ -12,7 +12,7 @@ use sem_core::parser::differ::{compute_semantic_diff, DiffResult};
 use sem_core::parser::plugins::create_default_registry;
 
 use crate::formatters::{json::format_json, terminal::format_terminal};
-use crate::tui;
+use crate::tui::{self, http_state::HttpSourceMode};
 
 pub struct DiffOptions {
     pub cwd: String,
@@ -415,7 +415,14 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(&initial_result, opts.diff_view, navigation)
+        let runtime_options = tui::TuiRuntimeOptions {
+            http_enabled: opts.tui_http,
+            http_port: opts.tui_http_port,
+            source_mode: resolve_tui_http_source_mode(opts),
+            cwd: opts.cwd.clone(),
+            file_exts: opts.file_exts.clone(),
+        };
+        tui::run_tui(&initial_result, opts.diff_view, navigation, runtime_options)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -436,6 +443,16 @@ pub fn is_commit_navigation_mode(opts: &DiffOptions) -> bool {
         && !opts.staged
         && opts.from.is_none()
         && opts.to.is_none()
+}
+
+fn resolve_tui_http_source_mode(opts: &DiffOptions) -> HttpSourceMode {
+    if opts.stdin {
+        HttpSourceMode::Stdin
+    } else if opts.files.len() == 2 {
+        HttpSourceMode::TwoFile
+    } else {
+        HttpSourceMode::Repository
+    }
 }
 
 pub fn build_commit_navigation_context(
