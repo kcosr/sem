@@ -625,9 +625,13 @@ impl AppState {
         self.entity_context_mode = self.entity_context_mode.toggled();
 
         if self.mode == Mode::Detail {
+            if let Some(row) = self.selected_row() {
+                self.detail = Some(render_change(&row.change, self.entity_context_mode));
+            } else {
+                self.detail = None;
+            }
             self.detail_hunk_index = 0;
             self.detail_scroll = 0;
-            self.refresh_detail();
         }
     }
 
@@ -1186,6 +1190,83 @@ mod tests {
         let after_next = app.detail_hunk_index();
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.detail_hunk_index() >= after_next);
+    }
+
+    #[test]
+    fn entity_mode_navigation_uses_active_view_anchor_sets() {
+        let mut app = app();
+        app.set_viewport(200, 30);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.detail_scroll(), 0);
+        assert_eq!(app.detail_hunk_index(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        assert!(app.detail_scroll() > 0);
+        let unified_second_anchor_scroll = app.detail_scroll();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        assert_eq!(app.detail_scroll(), unified_second_anchor_scroll);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+        let unified_first_anchor_scroll = app.detail_scroll();
+        assert!(unified_first_anchor_scroll < unified_second_anchor_scroll);
+        assert!(unified_first_anchor_scroll > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::SideBySide);
+        assert_eq!(app.detail_hunk_index(), 0);
+        let side_first_anchor_scroll = app.detail_scroll();
+        assert!(side_first_anchor_scroll > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        let side_second_anchor_scroll = app.detail_scroll();
+        assert!(side_second_anchor_scroll > side_first_anchor_scroll);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        assert_eq!(app.detail_scroll(), side_second_anchor_scroll);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), side_first_anchor_scroll);
+    }
+
+    #[test]
+    fn entity_mode_identical_content_navigation_is_boundary_noop() {
+        let content = "line1\nline2\nline3\n";
+        let mut app = AppState::from_diff_result(
+            &DiffResult {
+                changes: vec![change_with_identity(
+                    "same.ts",
+                    "same",
+                    "same.ts::same",
+                    ChangeType::Modified,
+                    Some(content),
+                    Some(content),
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            DiffView::Unified,
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
     }
 
     #[test]

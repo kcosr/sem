@@ -45,7 +45,11 @@ pub struct SideBySideLine {
 pub struct RenderedDiff {
     pub unified_lines: Vec<(LineKind, String)>,
     pub side_by_side_lines: Vec<SideBySideLine>,
+    // Anchor indices are mode-dependent: grouped hunk headers in Hunk mode,
+    // changed-region heads in Entity mode.
     pub unified_hunks: Vec<usize>,
+    // Anchor indices are mode-dependent: grouped hunk headers in Hunk mode,
+    // changed-region heads in Entity mode.
     pub side_by_side_hunks: Vec<usize>,
 }
 
@@ -66,7 +70,7 @@ impl RenderedDiff {
     }
 }
 
-pub fn render_change(change: &SemanticChange, _context_mode: EntityContextMode) -> RenderedDiff {
+pub fn render_change(change: &SemanticChange, context_mode: EntityContextMode) -> RenderedDiff {
     let before = change.before_content.as_deref().unwrap_or("");
     let after = change.after_content.as_deref().unwrap_or("");
 
@@ -74,20 +78,108 @@ pub fn render_change(change: &SemanticChange, _context_mode: EntityContextMode) 
         return RenderedDiff::unavailable();
     }
 
+    match context_mode {
+        EntityContextMode::Hunk => render_grouped_change(change, before, after),
+        EntityContextMode::Entity => render_full_entity_change(change, before, after),
+    }
+}
+
+fn render_grouped_change(change: &SemanticChange, before: &str, after: &str) -> RenderedDiff {
     let diff = TextDiff::from_lines(before, after);
     let groups = diff.grouped_ops(3);
-
     if groups.is_empty() {
         return RenderedDiff::unavailable();
     }
 
+    let base_old = change.before_start_line.unwrap_or(1);
+    let base_new = change.after_start_line.unwrap_or(1);
+
+    render_groups(&diff, groups, base_old, base_new)
+}
+
+fn render_full_entity_change(change: &SemanticChange, before: &str, after: &str) -> RenderedDiff {
+    let diff = TextDiff::from_lines(before, after);
+    let mut unified_lines: Vec<(LineKind, String)> = Vec::new();
+    let mut side_by_side_lines: Vec<SideBySideLine> = Vec::new();
+
+    let base_old = change.before_start_line.unwrap_or(1);
+    let base_new = change.after_start_line.unwrap_or(1);
+    let old_count: usize = diff.ops().iter().map(|op| op.old_range().len()).sum();
+    let new_count: usize = diff.ops().iter().map(|op| op.new_range().len()).sum();
+    let header = format!("@@ -{base_old},{old_count} +{base_new},{new_count} @@");
+    unified_lines.push((LineKind::Header, header.clone()));
+    side_by_side_lines.push(SideBySideLine {
+        left_number: None,
+        left_text: header,
+        right_number: None,
+        right_text: String::new(),
+        kind: LineKind::Header,
+    });
+
+    let mut old_line = base_old;
+    let mut new_line = base_new;
+    let mut pending_removed: Vec<(usize, String)> = Vec::new();
+    let mut pending_added: Vec<(usize, String)> = Vec::new();
+
+    for op in diff.ops() {
+        for diff_change in diff.iter_changes(op) {
+            let text = diff_change.value().trim_end_matches('\n').to_string();
+            match diff_change.tag() {
+                ChangeTag::Delete => {
+                    unified_lines.push((LineKind::Removed, format!("- {text}")));
+                    pending_removed.push((old_line, text));
+                    old_line = old_line.saturating_add(line_count(diff_change.value()));
+                }
+                ChangeTag::Insert => {
+                    unified_lines.push((LineKind::Added, format!("+ {text}")));
+                    pending_added.push((new_line, text));
+                    new_line = new_line.saturating_add(line_count(diff_change.value()));
+                }
+                ChangeTag::Equal => {
+                    flush_pending(
+                        &mut side_by_side_lines,
+                        &mut pending_removed,
+                        &mut pending_added,
+                    );
+                    unified_lines.push((LineKind::Unchanged, format!("  {text}")));
+                    side_by_side_lines.push(SideBySideLine {
+                        left_number: Some(old_line),
+                        left_text: text.clone(),
+                        right_number: Some(new_line),
+                        right_text: text,
+                        kind: LineKind::Unchanged,
+                    });
+                    old_line = old_line.saturating_add(line_count(diff_change.value()));
+                    new_line = new_line.saturating_add(line_count(diff_change.value()));
+                }
+            }
+        }
+    }
+
+    flush_pending(
+        &mut side_by_side_lines,
+        &mut pending_removed,
+        &mut pending_added,
+    );
+
+    RenderedDiff {
+        unified_hunks: changed_region_unified_anchors(&unified_lines),
+        side_by_side_hunks: changed_region_side_by_side_anchors(&side_by_side_lines),
+        unified_lines,
+        side_by_side_lines,
+    }
+}
+
+fn render_groups(
+    diff: &TextDiff<'_, '_, '_, str>,
+    groups: Vec<Vec<similar::DiffOp>>,
+    base_old: usize,
+    base_new: usize,
+) -> RenderedDiff {
     let mut unified_lines: Vec<(LineKind, String)> = Vec::new();
     let mut unified_hunks: Vec<usize> = Vec::new();
     let mut side_by_side_lines: Vec<SideBySideLine> = Vec::new();
     let mut side_by_side_hunks: Vec<usize> = Vec::new();
-
-    let base_old = change.before_start_line.unwrap_or(1);
-    let base_new = change.after_start_line.unwrap_or(1);
 
     for group in groups {
         let old_start = base_old.saturating_add(group[0].old_range().start);
@@ -156,11 +248,47 @@ pub fn render_change(change: &SemanticChange, _context_mode: EntityContextMode) 
     }
 
     RenderedDiff {
-        unified_lines,
-        side_by_side_lines,
         unified_hunks,
         side_by_side_hunks,
+        unified_lines,
+        side_by_side_lines,
     }
+}
+
+fn changed_region_unified_anchors(lines: &[(LineKind, String)]) -> Vec<usize> {
+    let mut anchors = Vec::new();
+    let mut in_region = false;
+    for (index, (kind, _)) in lines.iter().enumerate() {
+        if is_changed_kind(*kind) {
+            if !in_region {
+                anchors.push(index);
+                in_region = true;
+            }
+        } else {
+            in_region = false;
+        }
+    }
+    anchors
+}
+
+fn changed_region_side_by_side_anchors(lines: &[SideBySideLine]) -> Vec<usize> {
+    let mut anchors = Vec::new();
+    let mut in_region = false;
+    for (index, line) in lines.iter().enumerate() {
+        if is_changed_kind(line.kind) {
+            if !in_region {
+                anchors.push(index);
+                in_region = true;
+            }
+        } else {
+            in_region = false;
+        }
+    }
+    anchors
+}
+
+fn is_changed_kind(kind: LineKind) -> bool {
+    matches!(kind, LineKind::Added | LineKind::Removed | LineKind::Modified)
 }
 
 fn flush_pending(
@@ -277,5 +405,57 @@ mod tests {
         assert_eq!(rendered.unified_hunks, vec![0]);
         assert_eq!(rendered.side_by_side_hunks, vec![0]);
         assert_eq!(rendered.unified_lines[0].1, "content unavailable");
+    }
+
+    #[test]
+    fn render_change_entity_mode_includes_full_context_and_changed_region_anchors() {
+        let before =
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n";
+        let after = "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
+
+        let grouped = render_change(&change(Some(before), Some(after)), EntityContextMode::Hunk);
+        let entity = render_change(&change(Some(before), Some(after)), EntityContextMode::Entity);
+
+        assert!(entity.unified_lines.len() > grouped.unified_lines.len());
+        assert_eq!(entity.unified_hunks, vec![2, 12]);
+        assert_eq!(entity.side_by_side_hunks, vec![2, 11]);
+    }
+
+    #[test]
+    fn render_change_entity_mode_identical_content_has_empty_anchor_list() {
+        let content = "line1\nline2\nline3\n";
+        let rendered = render_change(
+            &change(Some(content), Some(content)),
+            EntityContextMode::Entity,
+        );
+
+        assert!(rendered.unified_lines.len() > 1);
+        assert!(rendered
+            .unified_lines
+            .iter()
+            .any(|(kind, _)| *kind == LineKind::Unchanged));
+        assert_eq!(rendered.unified_hunks, Vec::<usize>::new());
+        assert_eq!(rendered.side_by_side_hunks, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn render_change_entity_mode_dedupes_contiguous_multiline_change_region() {
+        let before = "line1\nline2\nline3\nline4\n";
+        let after = "line1\nline2 changed\nline3 changed\nline4\n";
+        let rendered = render_change(&change(Some(before), Some(after)), EntityContextMode::Entity);
+
+        assert_eq!(rendered.unified_hunks, vec![2]);
+        assert_eq!(rendered.side_by_side_hunks, vec![2]);
+    }
+
+    #[test]
+    fn render_change_entity_mode_added_content_has_single_region_anchor() {
+        let rendered = render_change(
+            &change(None, Some("new line 1\nnew line 2\n")),
+            EntityContextMode::Entity,
+        );
+
+        assert_eq!(rendered.unified_hunks, vec![1]);
+        assert_eq!(rendered.side_by_side_hunks, vec![1]);
     }
 }

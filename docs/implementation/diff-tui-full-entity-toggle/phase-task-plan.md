@@ -246,6 +246,27 @@ Gate:
 - Notes:
   - both reviews completed with stream terminal events (`result.completed`).
 
+### 9.6 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): PENDING (to be recorded after H2 milestone commit)
+- Acceptance evidence:
+  - `cargo test -p sem-cli` (run from `crates/`) => pass (`116 passed`, `0 failed`).
+  - renderer: `EntityContextMode::Entity` now uses full-entity line stream with changed-region anchor generation for unified and side-by-side outputs.
+  - navigation: app tests validate active-anchor traversal for `(entity, unified)` and `(entity, side-by-side)` plus deterministic boundary no-op behavior.
+  - hardening: added contiguous multi-line dedupe test and added-content anchor test for entity mode.
+- Review run IDs + triage outcomes:
+  - `r_20260308211620614_9881f860`:
+    - `accept`: no additional changes required.
+    - `defer`: none.
+    - `reject`: none.
+  - `r_20260308211716115_546d82de`:
+    - `accept`: added RenderedDiff anchor-field clarity comments, contiguous-region dedupe coverage, entity-mode last-anchor boundary assertions, and added-content anchor coverage.
+    - `defer`: footer `e` cell/help text integration and render-frame/footer hardening coverage to H3 scope.
+    - `reject`: change toggle-reset semantics to snap to first anchor after `e` (kept reset contract `detail_scroll=0`), and treat identical-content hunk mode as full-entity rendering (hunk-mode parity remains locked to grouped behavior).
+- Go/No-Go: GO
+- Notes:
+  - both reviews completed with stream terminal events (`result.completed`).
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline and ordering contract).
