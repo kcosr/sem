@@ -243,7 +243,30 @@ Template:
   - both review runs completed via session stream terminal event `result.completed`.
   - H1 intentionally excludes `[`/`]` user key wiring and header/status rendering per phase boundaries; scheduled for H2.
 
-### 9.5 Authoring-Stage Evidence (Spec Plan)
+### 9.5 H2 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `cab4dfc`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` => pass (`43 passed, 0 failed`) including H2-focused tests:
+    - `bracket_keys_queue_commit_actions_in_list_and_detail_modes`
+    - `reload_coordinator_drops_stale_results_and_keeps_latest_request`
+    - root/head boundary assertions in `process_commit_step_request_transitions_cursor_on_lineage`
+    - `apply_empty_snapshot_in_detail_mode_keeps_ui_stable`
+    - `commit_context_line_formats_for_supported_and_unsupported_modes`
+  - `cargo test -p sem-core` => pass (`41 passed, 0 failed`).
+  - `cargo fmt -p sem-cli -p sem-core` => pass.
+  - `npm run lint` => `NO-GO` for global TS workspace baseline (missing module/type dependencies in current environment; unrelated to H2 Rust scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to H2 Rust scope).
+  - manual: confirmed H2 UX contract implementation in code path (`[`/`]` dispatch in list/detail modes, header commit metadata line + fallback text, loading/status hints in list/detail render, unsupported-mode no-op hints, deterministic reset on successful reload).
+- Review run IDs + triage outcomes:
+  - `r_20260308163932027_8e232d18` (`generic-gemini`): `accept` no blocking defects; confirmed H2 deliverables complete.
+  - `r_20260308164028187_7c769021` (`generic-pi`): `accept` help-overlay disabled-mode hint and additional edge-case tests (empty snapshot/detail mode/context-line formatting); `defer` worker-disconnect micro-edge and further hardening/perf concerns to H3; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - both review runs completed via session stream terminal event `result.completed`.
+  - accepted PI follow-ups were applied before phase close and re-verified with `cargo` test gates.
+
+### 9.6 Authoring-Stage Evidence (Spec Plan)
 - Completion date: 2026-03-08
 - Commit hash(es): N/A (planning stream)
 - Acceptance evidence:
