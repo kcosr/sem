@@ -16,6 +16,11 @@ sem diff
 sem diff --tui
 sem diff --tui --diff-view side-by-side
 sem diff --tui --commit HEAD~3
+sem diff --from HEAD~5 --to HEAD
+sem diff --from HEAD --to WORKING
+sem diff --tui --from HEAD~5 --to HEAD
+sem diff --tui --from HEAD --to WORKING
+sem diff --tui --from HEAD~3 --to HEAD --step-mode pairwise
 
 # Entity-level blame (who last touched each function/class)
 sem blame src/auth.ts
@@ -38,7 +43,8 @@ sem impact validateToken --file-exts .py
 
 - `↑/↓` or `j/k`: selection / detail scrolling
 - `Enter` / `Esc`: open and close entity detail
-- `[` / `]`: step older/newer commit snapshot (commit mode only)
+- `[` / `]`: step older/newer endpoint snapshot
+- `m`: toggle `pairwise` / `cumulative` step mode
 - `Tab`: unified vs side-by-side toggle
 - `n/p`: hunk navigation
 - `PageUp/PageDown`: page scrolling in detail mode
@@ -46,7 +52,12 @@ sem impact validateToken --file-exts .py
 - `?`: help overlay
 - `q`: quit
 
-Commit stepping is enabled only for `sem diff --tui --commit <rev>`. In `--stdin`, two-file, staged, and range modes, `[`/`]` remain inert.
+Stepping is available for TUI Git-backed inputs (`--commit`, explicit `--from/--to`, staged, and implicit latest mode) and disabled for stdin/two-file inputs.
+Startup defaults:
+- explicit `--from/--to` => `cumulative`
+- implicit/latest and `--commit` => `pairwise`
+- `--step-mode pairwise|cumulative` overrides startup only (`m` still toggles in-session)
+Pseudo-endpoints (`INDEX`, `WORKING`) are also supported in `--from/--to` outside TUI.
 
 ## Languages
 

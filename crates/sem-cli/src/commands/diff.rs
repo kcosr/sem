@@ -27,6 +27,7 @@ pub struct DiffOptions {
     pub profile: bool,
     pub file_exts: Vec<String>,
     pub files: Vec<String>,
+    pub step_mode: Option<StepMode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,12 +115,6 @@ pub struct StepNavigationContext {
 }
 
 #[derive(Clone, Debug)]
-pub struct TuiRangeContext {
-    pub from: String,
-    pub to: String,
-}
-
-#[derive(Clone, Debug)]
 pub struct StepSnapshot {
     pub cursor: StepCursor,
     pub result: DiffResult,
@@ -181,6 +176,14 @@ pub type CommitStepRequest = StepRequest;
 pub type CommitRefreshRequest = StepRefreshRequest;
 pub type CommitLoadStatus = StepLoadStatus;
 pub type CommitStepResponse = StepResponse;
+
+#[derive(Clone, Debug)]
+pub struct StepNavigationBootstrap {
+    pub context: StepNavigationContext,
+    pub cursor: StepCursor,
+    pub mode: StepMode,
+    pub base_endpoint_id: Option<String>,
+}
 
 struct InputPhase {
     file_changes: Vec<FileChange>,
@@ -307,14 +310,18 @@ fn collect_diff_input_with_stdin(
                 .map_err(|error| error.to_string())?;
             (scope, changes)
         } else if let (Some(ref from), Some(ref to)) = (&opts.from, &opts.to) {
-            let scope = DiffScope::Range {
-                from: from.clone(),
-                to: to.clone(),
-            };
-            let changes = git
-                .get_changed_files(&scope)
-                .map_err(|error| error.to_string())?;
-            (scope, changes)
+            let from_endpoint_id = resolve_endpoint_id_from_ref(&git, from)?;
+            let to_endpoint_id = resolve_endpoint_id_from_ref(&git, to)?;
+            let from_kind = endpoint_id_to_kind(&from_endpoint_id)?;
+            let to_kind = endpoint_id_to_kind(&to_endpoint_id)?;
+            let changes = load_changed_files_between_endpoints(&opts.cwd, &from_kind, &to_kind)?;
+            (
+                DiffScope::Range {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                changes,
+            )
         } else if opts.staged {
             let scope = DiffScope::Staged;
             let changes = git
@@ -380,12 +387,33 @@ fn compute_diff_result(file_changes: &[FileChange]) -> ComputePhase {
 
 fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Option<String>, String> {
     if opts.tui {
-        let commit_navigation = build_commit_navigation_context(opts)?;
-        if result.changes.is_empty() && commit_navigation.is_none() {
+        let mut navigation = build_tui_navigation_bootstrap(opts)?;
+        let mut initial_result = result.clone();
+        if let Some(bootstrap) = navigation.as_mut() {
+            let response = process_step_refresh_request(
+                &bootstrap.context,
+                &StepRefreshRequest {
+                    request_id: 0,
+                    current_endpoint_id: bootstrap.cursor.endpoint_id.clone(),
+                    current_index: bootstrap.cursor.index,
+                    source_mode: bootstrap.context.source_mode,
+                    mode: bootstrap.mode,
+                    base_endpoint_id: bootstrap.base_endpoint_id.clone(),
+                },
+            );
+            if let Some(snapshot) = response.snapshot {
+                initial_result = snapshot.result;
+                bootstrap.cursor = snapshot.cursor;
+                bootstrap.mode = snapshot.mode;
+                bootstrap.base_endpoint_id = snapshot.base_endpoint_id;
+            }
+        }
+
+        if initial_result.changes.is_empty() && navigation.is_none() {
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(result, opts.diff_view, commit_navigation)
+        tui::run_tui(&initial_result, opts.diff_view, navigation)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -463,37 +491,190 @@ pub fn build_commit_navigation_context(
     Ok(Some((context, cursor)))
 }
 
-pub fn build_tui_range_context(opts: &DiffOptions) -> Result<Option<TuiRangeContext>, String> {
-    let (from_ref, to_ref) = match (&opts.from, &opts.to) {
-        (Some(from_ref), Some(to_ref))
-            if opts.tui
-                && opts.files.is_empty()
-                && !opts.stdin
-                && !opts.staged
-                && opts.commit.is_none() =>
-        {
-            (from_ref.as_str(), to_ref.as_str())
-        }
-        _ => return Ok(None),
+pub fn build_tui_navigation_bootstrap(
+    opts: &DiffOptions,
+) -> Result<Option<StepNavigationBootstrap>, String> {
+    if !opts.tui || !opts.files.is_empty() || opts.stdin {
+        return Ok(None);
+    }
+
+    let default_mode = if is_explicit_tui_range_mode(opts) {
+        StepMode::Cumulative
+    } else {
+        StepMode::Pairwise
     };
+    let startup_mode = opts.step_mode.unwrap_or(default_mode);
+
+    if let Some((context, cursor)) = build_commit_navigation_context(opts)? {
+        let base_endpoint_id = if startup_mode == StepMode::Cumulative {
+            Some(cursor.endpoint_id.clone())
+        } else {
+            None
+        };
+        return Ok(Some(StepNavigationBootstrap {
+            context,
+            cursor,
+            mode: startup_mode,
+            base_endpoint_id,
+        }));
+    }
 
     let git = GitBridge::open(Path::new(&opts.cwd))
         .map_err(|_| "Not inside a Git repository.".to_string())?;
-    let from = describe_ref_with_details(&git, from_ref)?;
-    let to = describe_ref_with_details(&git, to_ref)?;
 
-    Ok(Some(TuiRangeContext { from, to }))
+    if is_explicit_tui_range_mode(opts) {
+        let from_ref = opts
+            .from
+            .as_deref()
+            .ok_or_else(|| "missing --from endpoint".to_string())?;
+        let to_ref = opts
+            .to
+            .as_deref()
+            .ok_or_else(|| "missing --to endpoint".to_string())?;
+        let all_endpoints = build_canonical_global_endpoints(&git)?;
+        let all_endpoint_index: HashMap<String, usize> = all_endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
+            .collect();
+        let from_endpoint_id = resolve_endpoint_id_from_ref(&git, from_ref)?;
+        let to_endpoint_id = resolve_endpoint_id_from_ref(&git, to_ref)?;
+        let from_index = all_endpoint_index
+            .get(&from_endpoint_id)
+            .copied()
+            .ok_or_else(|| {
+                format!("endpoint {from_endpoint_id} is not part of active first-parent path")
+            })?;
+        let to_index = all_endpoint_index
+            .get(&to_endpoint_id)
+            .copied()
+            .ok_or_else(|| {
+                format!("endpoint {to_endpoint_id} is not part of active first-parent path")
+            })?;
+        let (start, end) = if from_index <= to_index {
+            (from_index, to_index)
+        } else {
+            (to_index, from_index)
+        };
+        let endpoints = all_endpoints[start..=end].to_vec();
+        let endpoint_index: HashMap<String, usize> = endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
+            .collect();
+        let context = StepNavigationContext {
+            cwd: opts.cwd.clone(),
+            file_exts: opts.file_exts.clone(),
+            source_mode: TuiSourceMode::Unified,
+            endpoints,
+            endpoint_index,
+        };
+        let cursor = build_step_cursor(&git, &context, &to_endpoint_id)?;
+        let base_endpoint_id = if startup_mode == StepMode::Cumulative {
+            Some(from_endpoint_id)
+        } else {
+            None
+        };
+        return Ok(Some(StepNavigationBootstrap {
+            context,
+            cursor,
+            mode: startup_mode,
+            base_endpoint_id,
+        }));
+    }
+
+    if opts.staged {
+        let mut endpoints = Vec::new();
+        if let Some(head_endpoint) = build_head_endpoint(&git) {
+            endpoints.push(head_endpoint);
+        }
+        endpoints.push(index_endpoint());
+        let endpoint_index: HashMap<String, usize> = endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
+            .collect();
+        let context = StepNavigationContext {
+            cwd: opts.cwd.clone(),
+            file_exts: opts.file_exts.clone(),
+            source_mode: TuiSourceMode::Unified,
+            endpoints,
+            endpoint_index,
+        };
+        let cursor = build_step_cursor(&git, &context, "index")?;
+        let base_endpoint_id = if startup_mode == StepMode::Cumulative {
+            Some(cursor.endpoint_id.clone())
+        } else {
+            None
+        };
+        return Ok(Some(StepNavigationBootstrap {
+            context,
+            cursor,
+            mode: startup_mode,
+            base_endpoint_id,
+        }));
+    }
+
+    let has_staged = !git
+        .get_changed_files(&DiffScope::Staged)
+        .map_err(|error| error.to_string())?
+        .is_empty();
+    let has_working = !git
+        .get_changed_files(&DiffScope::Working)
+        .map_err(|error| error.to_string())?
+        .is_empty();
+
+    let mut endpoints = Vec::new();
+    let mut head_endpoint_id: Option<String> = None;
+    if let Some(head_endpoint) = build_head_endpoint(&git) {
+        head_endpoint_id = Some(head_endpoint.endpoint_id.clone());
+        endpoints.push(head_endpoint);
+    }
+    endpoints.push(index_endpoint());
+    endpoints.push(working_endpoint());
+    let endpoint_index: HashMap<String, usize> = endpoints
+        .iter()
+        .enumerate()
+        .map(|(index, endpoint)| (endpoint.endpoint_id.clone(), index))
+        .collect();
+    let cursor_endpoint_id = if has_staged {
+        "index".to_string()
+    } else if has_working {
+        "working".to_string()
+    } else if let Some(head_endpoint_id) = head_endpoint_id {
+        head_endpoint_id
+    } else {
+        "index".to_string()
+    };
+    let context = StepNavigationContext {
+        cwd: opts.cwd.clone(),
+        file_exts: opts.file_exts.clone(),
+        source_mode: TuiSourceMode::Unified,
+        endpoints,
+        endpoint_index,
+    };
+    let cursor = build_step_cursor(&git, &context, &cursor_endpoint_id)?;
+    let base_endpoint_id = if startup_mode == StepMode::Cumulative {
+        Some(cursor.endpoint_id.clone())
+    } else {
+        None
+    };
+    Ok(Some(StepNavigationBootstrap {
+        context,
+        cursor,
+        mode: startup_mode,
+        base_endpoint_id,
+    }))
 }
 
-fn describe_ref_with_details(git: &GitBridge, refspec: &str) -> Result<String, String> {
-    let sha = git
-        .resolve_commit_sha(refspec)
-        .map_err(|error| format!("resolving commit {refspec}: {error}"))?;
-    let short_sha: String = sha.chars().take(7).collect();
-    let subject = git
-        .get_commit_subject(&sha)
-        .map_err(|error| format!("resolving subject for {refspec}: {error}"))?;
-    Ok(format!("{refspec}  {short_sha}  {subject}"))
+fn is_explicit_tui_range_mode(opts: &DiffOptions) -> bool {
+    opts.tui
+        && opts.from.is_some()
+        && opts.to.is_some()
+        && opts.files.is_empty()
+        && !opts.stdin
+        && !opts.staged
+        && opts.commit.is_none()
 }
 
 pub fn process_step_request(
@@ -846,6 +1027,74 @@ fn commit_endpoint_id(sha: &str) -> String {
     format!("commit:{sha}")
 }
 
+fn index_endpoint() -> StepEndpoint {
+    StepEndpoint {
+        endpoint_id: "index".to_string(),
+        display_ref: Some("INDEX".to_string()),
+        kind: StepEndpointKind::Index,
+    }
+}
+
+fn working_endpoint() -> StepEndpoint {
+    StepEndpoint {
+        endpoint_id: "working".to_string(),
+        display_ref: Some("WORKING".to_string()),
+        kind: StepEndpointKind::Working,
+    }
+}
+
+fn build_head_endpoint(git: &GitBridge) -> Option<StepEndpoint> {
+    let head_sha = git.get_head_sha().ok()?;
+    let subject = git.get_commit_subject(&head_sha).ok()?;
+    let short_sha: String = head_sha.chars().take(7).collect();
+    Some(StepEndpoint {
+        endpoint_id: commit_endpoint_id(&head_sha),
+        display_ref: Some(format!("HEAD {short_sha} {subject}")),
+        kind: StepEndpointKind::Commit { sha: head_sha },
+    })
+}
+
+fn build_canonical_global_endpoints(git: &GitBridge) -> Result<Vec<StepEndpoint>, String> {
+    let mut endpoints = Vec::new();
+    if let Ok(head_sha) = git.get_head_sha() {
+        let lineage = git
+            .get_first_parent_lineage(&head_sha)
+            .map_err(|error| format!("building first-parent lineage: {error}"))?;
+        let rev_labels: HashMap<String, String> = lineage
+            .iter()
+            .enumerate()
+            .map(|(index, sha)| (sha.clone(), format!("HEAD~{index}")))
+            .collect();
+        for sha in lineage.iter().rev() {
+            endpoints.push(StepEndpoint {
+                endpoint_id: commit_endpoint_id(sha),
+                display_ref: rev_labels.get(sha).cloned(),
+                kind: StepEndpointKind::Commit { sha: sha.clone() },
+            });
+        }
+    }
+
+    endpoints.push(index_endpoint());
+    endpoints.push(working_endpoint());
+    Ok(endpoints)
+}
+
+fn resolve_endpoint_id_from_ref(git: &GitBridge, reference: &str) -> Result<String, String> {
+    if reference.eq_ignore_ascii_case("index") {
+        return Ok("index".to_string());
+    }
+    if reference.eq_ignore_ascii_case("working") {
+        return Ok("working".to_string());
+    }
+    if let Some(sha) = reference.strip_prefix("commit:") {
+        return Ok(commit_endpoint_id(sha));
+    }
+    let sha = git
+        .resolve_commit_sha(reference)
+        .map_err(|error| format!("resolving endpoint {reference}: {error}"))?;
+    Ok(commit_endpoint_id(&sha))
+}
+
 fn endpoint_id_to_kind(endpoint_id: &str) -> Result<StepEndpointKind, String> {
     if endpoint_id.eq_ignore_ascii_case("index") {
         return Ok(StepEndpointKind::Index);
@@ -1171,6 +1420,7 @@ mod tests {
             profile: false,
             file_exts: vec![],
             files: vec![],
+            step_mode: None,
         }
     }
 
@@ -1242,6 +1492,7 @@ mod tests {
     fn execute_output_phase_returns_no_change_message_for_tui() {
         let mut options = base_options();
         options.tui = true;
+        options.stdin = true;
 
         let empty_result = DiffResult {
             changes: vec![],
@@ -1827,6 +2078,377 @@ mod tests {
         );
         assert_eq!(snapshot.mode, StepMode::Pairwise);
         assert_eq!(snapshot.base_endpoint_id, None);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_defaults_explicit_range_to_cumulative() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-range-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.from = Some("HEAD~2".to_string());
+        options.to = Some("HEAD~1".to_string());
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("range mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Cumulative);
+        assert_eq!(
+            bootstrap.base_endpoint_id,
+            Some(commit_endpoint_id(&lineage[2]))
+        );
+        assert_eq!(
+            bootstrap.cursor.endpoint_id,
+            commit_endpoint_id(&lineage[1])
+        );
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Unified);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_defaults_commit_to_pairwise() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-commit-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.commit = Some("HEAD~1".to_string());
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("commit mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Pairwise);
+        assert_eq!(bootstrap.base_endpoint_id, None);
+        assert_eq!(
+            bootstrap.cursor.endpoint_id,
+            commit_endpoint_id(&lineage[1])
+        );
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Commit);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_defaults_implicit_latest_to_pairwise() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-implicit-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("implicit mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Pairwise);
+        assert_eq!(bootstrap.base_endpoint_id, None);
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Unified);
+        assert_eq!(
+            bootstrap.cursor.endpoint_id,
+            commit_endpoint_id(&lineage[0])
+        );
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_defaults_staged_to_pairwise() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-staged-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n")
+            .expect("initial file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+        std::fs::write(base.join("example.rs"), "fn staged() {}\n")
+            .expect("staged file should write");
+        run_git(&base, &["add", "example.rs"]);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.staged = true;
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("staged mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Pairwise);
+        assert_eq!(bootstrap.base_endpoint_id, None);
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Unified);
+        assert_eq!(bootstrap.cursor.endpoint_id, "index");
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_commit_mode_honors_cumulative_override() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-commit-cumulative-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.commit = Some("HEAD~1".to_string());
+        options.step_mode = Some(StepMode::Cumulative);
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("commit mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Cumulative);
+        assert_eq!(
+            bootstrap.base_endpoint_id,
+            Some(commit_endpoint_id(&lineage[1]))
+        );
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Commit);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_applies_step_mode_override() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-override-{stamp}"));
+        init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.from = Some("HEAD~2".to_string());
+        options.to = Some("HEAD".to_string());
+        options.step_mode = Some(StepMode::Pairwise);
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("range mode should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Pairwise);
+        assert_eq!(bootstrap.base_endpoint_id, None);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_tui_navigation_bootstrap_supports_pseudo_endpoint_range() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-bootstrap-pseudo-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n")
+            .expect("initial file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+        std::fs::write(base.join("example.rs"), "fn staged() {}\n")
+            .expect("staged file should write");
+        run_git(&base, &["add", "example.rs"]);
+        std::fs::write(base.join("example.rs"), "fn working() {}\n")
+            .expect("working file should write");
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.from = Some("HEAD".to_string());
+        options.to = Some("WORKING".to_string());
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("pseudo range should produce bootstrap");
+        assert_eq!(bootstrap.mode, StepMode::Cumulative);
+        assert_eq!(bootstrap.context.source_mode, TuiSourceMode::Unified);
+        let ids: Vec<String> = bootstrap
+            .context
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.endpoint_id.clone())
+            .collect();
+        assert!(ids.contains(&"index".to_string()));
+        assert!(ids.contains(&"working".to_string()));
+        assert_eq!(bootstrap.cursor.endpoint_id, "working");
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn endpoint_loader_handles_index_working_empty_populated_transitions() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-endpoint-transition-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n")
+            .expect("initial file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+
+        let empty = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Index,
+            &StepEndpointKind::Working,
+        )
+        .expect("index->working should load for empty state");
+        assert!(empty.is_empty());
+
+        std::fs::write(base.join("example.rs"), "fn working() {}\n")
+            .expect("working file should write");
+        let populated = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Index,
+            &StepEndpointKind::Working,
+        )
+        .expect("index->working should load for populated state");
+        assert_eq!(populated.len(), 1);
+
+        run_git(&base, &["add", "example.rs"]);
+        let staged_empty = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Index,
+            &StepEndpointKind::Working,
+        )
+        .expect("index->working should return to empty after staging");
+        assert!(staged_empty.is_empty());
+
+        std::fs::write(base.join("example.rs"), "fn working_again() {}\n")
+            .expect("working-again file should write");
+        let repopulated = load_changed_files_between_endpoints(
+            &base.to_string_lossy(),
+            &StepEndpointKind::Index,
+            &StepEndpointKind::Working,
+        )
+        .expect("index->working should repopulate after further edits");
+        assert_eq!(repopulated.len(), 1);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn startup_refresh_uses_bootstrap_cursor_mode_and_base() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-startup-refresh-{stamp}"));
+        let lineage = init_repo_with_three_commits(&base);
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.tui = true;
+        options.from = Some("HEAD~2".to_string());
+        options.to = Some("HEAD~1".to_string());
+
+        let bootstrap = build_tui_navigation_bootstrap(&options)
+            .expect("bootstrap should resolve")
+            .expect("range mode should produce bootstrap");
+        let response = process_step_refresh_request(
+            &bootstrap.context,
+            &StepRefreshRequest {
+                request_id: 0,
+                current_endpoint_id: bootstrap.cursor.endpoint_id.clone(),
+                current_index: bootstrap.cursor.index,
+                source_mode: bootstrap.context.source_mode,
+                mode: bootstrap.mode,
+                base_endpoint_id: bootstrap.base_endpoint_id.clone(),
+            },
+        );
+
+        assert_eq!(response.status, StepLoadStatus::Loaded);
+        let snapshot = response
+            .snapshot
+            .expect("refresh request should return startup snapshot");
+        assert_eq!(snapshot.mode, StepMode::Cumulative);
+        assert_eq!(
+            snapshot.base_endpoint_id,
+            Some(commit_endpoint_id(&lineage[2]))
+        );
+        assert_eq!(
+            snapshot.comparison.from_endpoint_id,
+            commit_endpoint_id(&lineage[2])
+        );
+        assert_eq!(
+            snapshot.comparison.to_endpoint_id,
+            commit_endpoint_id(&lineage[1])
+        );
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn diff_command_json_supports_pseudo_endpoint_range_without_tui() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("sem-json-pseudo-range-{stamp}"));
+        std::fs::create_dir_all(&base).expect("temp repo dir should be created");
+        run_git(&base, &["init"]);
+        run_git(&base, &["config", "user.email", "sem@example.com"]);
+        run_git(&base, &["config", "user.name", "sem"]);
+        std::fs::write(base.join("example.rs"), "fn one() {}\n")
+            .expect("initial file should write");
+        run_git(&base, &["add", "."]);
+        run_git(&base, &["commit", "-m", "first"]);
+        std::fs::write(base.join("example.rs"), "fn staged() {}\n")
+            .expect("staged file should write");
+        run_git(&base, &["add", "example.rs"]);
+        std::fs::write(base.join("example.rs"), "fn working() {}\n")
+            .expect("working file should write");
+
+        let mut options = base_options();
+        options.cwd = base.to_string_lossy().to_string();
+        options.from = Some("HEAD".to_string());
+        options.to = Some("WORKING".to_string());
+        options.format = OutputFormat::Json;
+
+        let input =
+            collect_diff_input_with_stdin(&options, None).expect("pseudo range input should load");
+        let filtered = filter_file_changes(input.file_changes, &options.file_exts);
+        let compute = compute_diff_result(&filtered);
+        let output = execute_output_phase(&options, &compute.result)
+            .expect("json output phase should succeed")
+            .expect("json mode should return output");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("json output must parse");
+        assert!(parsed.get("summary").is_some());
+        assert!(parsed.get("changes").is_some());
+        assert!(parsed["summary"]["total"].is_number());
 
         let _ = std::fs::remove_dir_all(base);
     }

@@ -4,7 +4,7 @@ mod tui;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use commands::blame::{blame_command, BlameOptions};
-use commands::diff::{diff_command, DiffOptions, DiffView, OutputFormat};
+use commands::diff::{diff_command, DiffOptions, DiffView, OutputFormat, StepMode};
 use commands::graph::{graph_command, GraphFormat, GraphOptions};
 use commands::impact::{impact_command, ImpactOptions};
 
@@ -60,6 +60,10 @@ enum Commands {
         /// Initial diff view for TUI mode
         #[arg(long, default_value = "unified", requires = "tui")]
         diff_view: DiffView,
+
+        /// Startup stepping mode for TUI (`m` can still toggle in-session)
+        #[arg(long, value_enum, requires = "tui")]
+        step_mode: Option<StepMode>,
 
         /// Show internal timing profile
         #[arg(long, hide = true)]
@@ -131,6 +135,7 @@ fn main() {
             format,
             tui,
             diff_view,
+            step_mode,
             profile,
             file_exts,
         }) => {
@@ -155,6 +160,7 @@ fn main() {
                 profile,
                 file_exts,
                 files,
+                step_mode,
             });
         }
         Some(Commands::Blame { file, json }) => {
@@ -224,6 +230,7 @@ fn main() {
                 profile: false,
                 file_exts: vec![],
                 files: vec![],
+                step_mode: None,
             });
         }
     }
@@ -271,5 +278,25 @@ mod tests {
             }
             _ => panic!("expected diff command"),
         }
+    }
+
+    #[test]
+    fn diff_accepts_step_mode_override_in_tui() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui", "--step-mode", "cumulative"])
+            .expect("must parse");
+        match parsed.command {
+            Some(Commands::Diff { step_mode, .. }) => {
+                assert_eq!(step_mode, Some(StepMode::Cumulative));
+            }
+            _ => panic!("expected diff command"),
+        }
+    }
+
+    #[test]
+    fn diff_rejects_step_mode_without_tui() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--step-mode", "pairwise"]);
+        assert!(parsed.is_err());
+        let error = parsed.expect_err("must error").to_string();
+        assert!(error.contains("--tui"));
     }
 }

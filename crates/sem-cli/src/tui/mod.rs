@@ -18,16 +18,16 @@ use ratatui::Terminal;
 use sem_core::parser::differ::DiffResult;
 
 use crate::commands::diff::{
-    process_commit_refresh_request, process_commit_step_request, CommitCursor, CommitLoadStatus,
+    process_commit_refresh_request, process_commit_step_request, CommitLoadStatus,
     CommitNavigationContext, CommitRefreshRequest, CommitStepRequest, CommitStepResponse, DiffView,
-    StepMode, TuiSourceMode,
+    StepMode, StepNavigationBootstrap, TuiSourceMode,
 };
 use app::PendingNavigationRequest;
 
 pub fn run_tui(
     result: &DiffResult,
     initial_view: DiffView,
-    commit_navigation: Option<(CommitNavigationContext, CommitCursor)>,
+    navigation_bootstrap: Option<StepNavigationBootstrap>,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -40,13 +40,14 @@ pub fn run_tui(
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
     render::prewarm_syntax_highlighting_async();
     let (context, source_mode, cursor, mode, base_endpoint_id) =
-        if let Some((context, cursor)) = commit_navigation {
+        if let Some(bootstrap) = navigation_bootstrap {
+            let source_mode = bootstrap.context.source_mode;
             (
-                context,
-                TuiSourceMode::Commit,
-                Some(cursor),
-                StepMode::Pairwise,
-                None,
+                bootstrap.context,
+                source_mode,
+                Some(bootstrap.cursor),
+                bootstrap.mode,
+                bootstrap.base_endpoint_id,
             )
         } else {
             (

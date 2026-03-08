@@ -54,6 +54,7 @@ sem diff --commit abc1234
 
 # Commit range
 sem diff --from HEAD~5 --to HEAD
+sem diff --from HEAD --to WORKING
 
 # JSON output (for AI agents, CI pipelines)
 sem diff --format json
@@ -62,6 +63,9 @@ sem diff --format json
 sem diff --tui
 sem diff --tui --diff-view side-by-side
 sem diff --tui --commit HEAD~3
+sem diff --tui --from HEAD~5 --to HEAD
+sem diff --tui --from HEAD --to WORKING
+sem diff --tui --from HEAD~3 --to HEAD --step-mode pairwise
 
 # Read file changes from stdin (no git repo needed)
 echo '[{"filePath":"src/main.rs","status":"modified","beforeContent":"...","afterContent":"..."}]' \
@@ -86,7 +90,8 @@ sem blame src/auth.ts
 
 - `↑/↓` or `j/k`: move selection / scroll detail
 - `Enter`: open selected entity detail
-- `[` / `]`: step older/newer commit snapshot (commit mode only)
+- `[` / `]`: step older/newer endpoint snapshot
+- `m`: toggle `pairwise` / `cumulative` step mode
 - `Esc`: close detail view
 - `Tab`: toggle unified vs side-by-side detail view
 - `n/p`: jump to next/previous hunk
@@ -95,7 +100,12 @@ sem blame src/auth.ts
 - `?`: toggle help overlay
 - `q`: quit
 
-Commit stepping is enabled only for `sem diff --tui --commit <rev>`. In `--stdin`, two-file, staged, and range modes, `[`/`]` are inert and the TUI shows an unavailable hint.
+Stepping is available for TUI Git-backed inputs (`--commit`, explicit `--from/--to`, staged, and implicit latest mode) and disabled for stdin/two-file inputs.
+Startup defaults:
+- explicit `--from/--to` => `cumulative`
+- implicit/latest and `--commit` => `pairwise`
+- `--step-mode pairwise|cumulative` overrides startup only (`m` still toggles in-session)
+Pseudo-endpoints (`INDEX`, `WORKING`) are also supported in `--from/--to` outside TUI.
 
 ## What it parses
 
