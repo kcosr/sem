@@ -310,11 +310,11 @@ fn compute_diff_result(file_changes: &[FileChange]) -> ComputePhase {
 
 fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Option<String>, String> {
     if opts.tui {
-        if result.changes.is_empty() {
+        let commit_navigation = build_commit_navigation_context(opts)?;
+        if result.changes.is_empty() && commit_navigation.is_none() {
             return Ok(Some(format_terminal(result)));
         }
 
-        let commit_navigation = build_commit_navigation_context(opts)?;
         tui::run_tui(result, opts.diff_view, commit_navigation)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
@@ -760,6 +760,20 @@ mod tests {
             },
         );
         assert_eq!(boundary.status, CommitLoadStatus::BoundaryNoop);
+
+        let root_boundary = process_commit_step_request(
+            &context,
+            &CommitStepRequest {
+                request_id: 4,
+                action: CommitStepAction::Older,
+                current_sha: lineage
+                    .last()
+                    .expect("lineage should have a root commit")
+                    .clone(),
+                source_mode: TuiSourceMode::Commit,
+            },
+        );
+        assert_eq!(root_boundary.status, CommitLoadStatus::BoundaryNoop);
 
         let _ = std::fs::remove_dir_all(base);
     }

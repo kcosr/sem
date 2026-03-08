@@ -2,6 +2,7 @@ mod app;
 mod detail;
 mod render;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -38,13 +39,23 @@ pub fn run_tui(
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
     render::prewarm_syntax_highlighting_async();
     app_state.set_list_header_command(invoked_command_line());
-    let mut reload_coordinator = if let Some((context, cursor)) = commit_navigation {
-        app_state.configure_commit_navigation(TuiSourceMode::Commit, Some(cursor));
-        Some(ReloadCoordinator::new(context))
+    let (context, source_mode, cursor) = if let Some((context, cursor)) = commit_navigation {
+        (context, TuiSourceMode::Commit, Some(cursor))
     } else {
-        app_state.configure_commit_navigation(TuiSourceMode::Unsupported, None);
-        None
+        (
+            CommitNavigationContext {
+                cwd: String::new(),
+                file_exts: vec![],
+                source_mode: TuiSourceMode::Unsupported,
+                lineage: vec![],
+                lineage_index: HashMap::new(),
+            },
+            TuiSourceMode::Unsupported,
+            None,
+        )
     };
+    app_state.configure_commit_navigation(source_mode, cursor);
+    let mut reload_coordinator = ReloadCoordinator::new(context);
 
     if let Ok(size) = terminal.size() {
         app_state.set_viewport(size.width, size.height);
@@ -64,26 +75,24 @@ pub fn run_tui(
             }
         }
 
-        if let Some(coordinator) = reload_coordinator.as_mut() {
-            if let Some(action) = app_state.take_pending_commit_action() {
-                let request = CommitStepRequest {
-                    request_id: coordinator.next_request_id(),
-                    action,
-                    current_sha: app_state
-                        .commit_cursor()
-                        .map(|cursor| cursor.sha.clone())
-                        .unwrap_or_default(),
-                    source_mode: app_state.commit_source_mode(),
-                };
-                coordinator.queue_request(request);
-                app_state.set_commit_loading(true);
-            }
-
-            while let Some(response) = coordinator.try_recv_response() {
-                app_state.apply_commit_step_response(response);
-            }
-            app_state.set_commit_loading(coordinator.has_active_request());
+        if let Some(action) = app_state.take_pending_commit_action() {
+            let request = CommitStepRequest {
+                request_id: reload_coordinator.next_request_id(),
+                action,
+                current_sha: app_state
+                    .commit_cursor()
+                    .map(|cursor| cursor.sha.clone())
+                    .unwrap_or_default(),
+                source_mode: app_state.commit_source_mode(),
+            };
+            reload_coordinator.queue_request(request);
+            app_state.set_commit_loading(true);
         }
+
+        while let Some(response) = reload_coordinator.try_recv_response() {
+            app_state.apply_commit_step_response(response);
+        }
+        app_state.set_commit_loading(reload_coordinator.has_active_request());
     }
 
     drop(guard);
@@ -203,7 +212,14 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::format_invoked_command;
+    use super::{format_invoked_command, ReloadCoordinator};
+    use crate::commands::diff::{
+        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest,
+        TuiSourceMode,
+    };
+    use std::collections::HashMap;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn format_invoked_command_uses_executable_basename() {
@@ -218,5 +234,51 @@ mod tests {
             format_invoked_command(&args),
             "sem diff --tui --diff-view side-by-side"
         );
+    }
+
+    #[test]
+    fn reload_coordinator_drops_stale_results_and_keeps_latest_request() {
+        let mut coordinator = ReloadCoordinator::new(CommitNavigationContext {
+            cwd: String::new(),
+            file_exts: vec![],
+            source_mode: TuiSourceMode::Unsupported,
+            lineage: vec![],
+            lineage_index: HashMap::new(),
+        });
+
+        let first_request_id = coordinator.next_request_id();
+        coordinator.queue_request(CommitStepRequest {
+            request_id: first_request_id,
+            action: CommitStepAction::Older,
+            current_sha: String::new(),
+            source_mode: TuiSourceMode::Unsupported,
+        });
+        let second_request_id = coordinator.next_request_id();
+        coordinator.queue_request(CommitStepRequest {
+            request_id: second_request_id,
+            action: CommitStepAction::Newer,
+            current_sha: String::new(),
+            source_mode: TuiSourceMode::Unsupported,
+        });
+
+        let first = wait_for_response(&mut coordinator);
+        assert_eq!(first.status, CommitLoadStatus::IgnoredStaleResult);
+
+        let second = wait_for_response(&mut coordinator);
+        assert_eq!(second.applied_request_id, 2);
+        assert_eq!(second.status, CommitLoadStatus::UnsupportedMode);
+    }
+
+    fn wait_for_response(
+        coordinator: &mut ReloadCoordinator,
+    ) -> crate::commands::diff::CommitStepResponse {
+        for _ in 0..200 {
+            if let Some(response) = coordinator.try_recv_response() {
+                return response;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        panic!("timed out waiting for coordinator response");
     }
 }

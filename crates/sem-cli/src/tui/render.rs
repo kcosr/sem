@@ -63,12 +63,22 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(5),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(frame.area());
     let widths = compute_list_column_widths(chunks[1].width);
+
+    let status_line = if app.commit_loading() {
+        "Status: loading commit snapshot...".to_string()
+    } else if let Some(message) = app.commit_status_message() {
+        format!("Status: {message}")
+    } else if app.commit_navigation_enabled() {
+        "Status: ready (`[` older, `]` newer)".to_string()
+    } else {
+        "Status: commit stepping disabled for this mode".to_string()
+    };
 
     let columns = format!(
         "  {} {} {} {}",
@@ -80,6 +90,11 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(app.list_header_command(), Style::default().fg(Color::Cyan)),
+            Line::styled(
+                app.commit_context_line(),
+                Style::default().fg(Color::LightCyan),
+            ),
+            Line::styled(status_line, Style::default().fg(Color::Yellow)),
             Line::raw(""),
             Line::styled(columns, Style::default().fg(Color::DarkGray)),
         ]),
@@ -162,24 +177,34 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     state.select(selectable_indices.get(selected).copied());
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
-    frame.render_widget(
-        Paragraph::new("Controls: ↑/↓ j/k move, Enter open, g/G jump, ? help, q/Ctrl+c quit"),
-        chunks[2],
-    );
+    let mut footer =
+        "Controls: ↑/↓ j/k move, Enter open, [/] step commits, g/G jump, ? help, q/Ctrl+c quit"
+            .to_string();
+    if !app.commit_navigation_enabled() {
+        footer.push_str(" | commit stepping disabled");
+    }
+    frame.render_widget(Paragraph::new(footer), chunks[2]);
 }
 
 fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(frame.area());
 
     frame.render_widget(
-        Paragraph::new(app.detail_title()).style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(vec![
+            Line::styled(app.list_header_command(), Style::default().fg(Color::Cyan)),
+            Line::styled(
+                app.commit_context_line(),
+                Style::default().fg(Color::LightCyan),
+            ),
+            Line::raw(app.detail_title()),
+        ]),
         chunks[0],
     );
     let selected_file_path = app
@@ -230,10 +255,17 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     }
 
     let mut footer =
-        "Controls: Esc list, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, [/] step commits, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         footer.push_str(" | width too narrow for side-by-side, showing unified");
+    }
+    if !app.commit_navigation_enabled() {
+        footer.push_str(" | commit stepping disabled");
+    } else if app.commit_loading() {
+        footer.push_str(" | loading commit snapshot...");
+    } else if let Some(message) = app.commit_status_message() {
+        footer.push_str(&format!(" | {message}"));
     }
 
     frame.render_widget(Paragraph::new(footer), chunks[2]);
@@ -246,9 +278,12 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
     let help_lines = vec![
         Line::from("List Mode:"),
         Line::from("  ↑/↓ or j/k move selection"),
+        Line::from("  [ / ] step older/newer commit"),
+        Line::from("  commit stepping is disabled outside --commit mode"),
         Line::from("  Enter open detail"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Detail Mode:"),
+        Line::from("  [ / ] step older/newer commit"),
         Line::from("  Esc back to list"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),

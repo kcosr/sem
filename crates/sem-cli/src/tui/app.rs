@@ -127,6 +127,10 @@ impl AppState {
         self.commit_source_mode
     }
 
+    pub fn commit_navigation_enabled(&self) -> bool {
+        self.commit_source_mode == TuiSourceMode::Commit
+    }
+
     pub fn commit_cursor(&self) -> Option<&CommitCursor> {
         self.commit_cursor.as_ref()
     }
@@ -143,8 +147,25 @@ impl AppState {
         self.commit_loading = loading;
     }
 
+    pub fn commit_context_line(&self) -> String {
+        if !self.commit_navigation_enabled() {
+            return "Commit navigation unavailable for current input mode".to_string();
+        }
+
+        let Some(cursor) = self.commit_cursor() else {
+            return "Commit metadata unavailable".to_string();
+        };
+
+        let short_sha: String = cursor.sha.chars().take(7).collect();
+        match &cursor.rev_label {
+            Some(rev_label) => format!("{rev_label}  {short_sha}  {}", cursor.subject),
+            None => format!("{short_sha}  {}", cursor.subject),
+        }
+    }
+
     pub fn queue_commit_action(&mut self, action: CommitStepAction) {
         self.pending_commit_action = Some(action);
+        self.commit_status_message = None;
     }
 
     pub fn take_pending_commit_action(&mut self) -> Option<CommitStepAction> {
@@ -289,6 +310,8 @@ impl AppState {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
+            KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::Char('g') => self.selected = 0,
@@ -306,6 +329,8 @@ impl AppState {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
+            KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Esc => self.close_detail(),
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
@@ -714,6 +739,24 @@ mod tests {
     }
 
     #[test]
+    fn bracket_keys_queue_commit_actions_in_list_and_detail_modes() {
+        let mut app = app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(
+            app.take_pending_commit_action(),
+            Some(CommitStepAction::Older)
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(
+            app.take_pending_commit_action(),
+            Some(CommitStepAction::Newer)
+        );
+    }
+
+    #[test]
     fn apply_loaded_commit_snapshot_resets_selection_and_cursor_state() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
@@ -753,6 +796,80 @@ mod tests {
             Some("abc1234")
         );
         assert_eq!(app.commit_status_message(), Some("Commit snapshot loaded"));
+    }
+
+    #[test]
+    fn commit_context_line_formats_for_supported_and_unsupported_modes() {
+        let mut app = app();
+        app.configure_commit_navigation(TuiSourceMode::Unsupported, None);
+        assert_eq!(
+            app.commit_context_line(),
+            "Commit navigation unavailable for current input mode"
+        );
+
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            Some(CommitCursor {
+                rev_label: Some("HEAD~3".to_string()),
+                sha: "0123456789abcdef".to_string(),
+                subject: "feat: add stepping".to_string(),
+                has_older: true,
+                has_newer: true,
+            }),
+        );
+        assert_eq!(
+            app.commit_context_line(),
+            "HEAD~3  0123456  feat: add stepping"
+        );
+
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            Some(CommitCursor {
+                rev_label: None,
+                sha: "abcdef0123456789".to_string(),
+                subject: "chore: cleanup".to_string(),
+                has_older: true,
+                has_newer: false,
+            }),
+        );
+        assert_eq!(app.commit_context_line(), "abcdef0  chore: cleanup");
+    }
+
+    #[test]
+    fn apply_empty_snapshot_in_detail_mode_keeps_ui_stable() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.apply_commit_step_response(CommitStepResponse {
+            applied_request_id: 9,
+            status: CommitLoadStatus::Loaded,
+            snapshot: Some(CommitSnapshot {
+                cursor: CommitCursor {
+                    rev_label: Some("HEAD~0".to_string()),
+                    sha: "abc1234".to_string(),
+                    subject: "empty semantic diff".to_string(),
+                    has_older: true,
+                    has_newer: false,
+                },
+                result: DiffResult {
+                    changes: vec![],
+                    file_count: 0,
+                    added_count: 0,
+                    modified_count: 0,
+                    deleted_count: 0,
+                    moved_count: 0,
+                    renamed_count: 0,
+                },
+            }),
+            error: None,
+            retain_previous_snapshot: false,
+        });
+
+        assert_eq!(app.mode(), Mode::Detail);
+        assert_eq!(app.rows().len(), 0);
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.detail_scroll(), 0);
     }
 
     #[test]
