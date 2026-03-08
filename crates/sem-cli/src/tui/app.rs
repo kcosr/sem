@@ -136,6 +136,19 @@ impl AppState {
         &self.rows
     }
 
+    pub fn visible_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row_index, _)| self.row_matches_filter(row_index).then_some(row_index))
+            .collect()
+    }
+
+    pub fn selected_row(&self) -> Option<&EntityRow> {
+        self.selected_row_index()
+            .and_then(|row_index| self.rows.get(row_index))
+    }
+
     pub fn configure_commit_navigation(
         &mut self,
         source_mode: TuiSourceMode,
@@ -200,9 +213,11 @@ impl AppState {
     }
 
     pub fn apply_review_state(&mut self, state: ReviewStateData) {
+        let prior_selected = self.selected;
         self.review_filter = state.filter;
         self.reviewed_records = state.records;
         self.review_state_dirty = false;
+        self.realign_selection_after_visibility_change(prior_selected);
     }
 
     pub fn set_review_status_message(&mut self, message: Option<String>) {
@@ -230,9 +245,10 @@ impl AppState {
     }
 
     pub fn toggle_selected_reviewed(&mut self) -> bool {
+        let prior_selected = self.selected;
         let Some(identity) = self
-            .row_review_identities
-            .get(self.selected)
+            .selected_row_index()
+            .and_then(|row_index| self.row_review_identities.get(row_index))
             .and_then(|identity| identity.as_ref())
             .cloned()
         else {
@@ -249,12 +265,21 @@ impl AppState {
 
         self.review_state_dirty = true;
         self.review_status_message = None;
+        self.realign_selection_after_visibility_change(prior_selected);
+        if self.mode == Mode::Detail {
+            self.refresh_detail();
+        }
         true
     }
 
     pub fn cycle_review_filter(&mut self) {
+        let prior_selected = self.selected;
         self.review_filter = self.review_filter.cycle();
         self.review_state_dirty = true;
+        self.realign_selection_after_visibility_change(prior_selected);
+        if self.mode == Mode::Detail {
+            self.refresh_detail();
+        }
     }
 
     pub fn set_commit_loading(&mut self, loading: bool) {
@@ -399,7 +424,7 @@ impl AppState {
     }
 
     pub fn detail_title(&self) -> String {
-        let Some(row) = self.rows.get(self.selected) else {
+        let Some(row) = self.selected_row() else {
             return "Detail".to_string();
         };
 
@@ -458,12 +483,17 @@ impl AppState {
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
+            KeyCode::Char(' ') => {
+                let _ = self.toggle_selected_reviewed();
+            }
+            KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::Char('g') => self.selected = 0,
             KeyCode::Char('G') => {
-                if !self.rows.is_empty() {
-                    self.selected = self.rows.len() - 1;
+                let visible_len = self.visible_row_indices().len();
+                if visible_len > 0 {
+                    self.selected = visible_len - 1;
                 }
             }
             KeyCode::Enter => self.open_detail(),
@@ -478,6 +508,10 @@ impl AppState {
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
+            KeyCode::Char(' ') => {
+                let _ = self.toggle_selected_reviewed();
+            }
+            KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Esc => self.close_detail(),
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
@@ -497,46 +531,53 @@ impl AppState {
     }
 
     fn move_up(&mut self) {
-        if self.rows.is_empty() {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
             return;
         }
 
         if self.selected == 0 {
-            self.selected = self.rows.len() - 1;
+            self.selected = visible_len - 1;
         } else {
             self.selected -= 1;
         }
     }
 
     fn move_down(&mut self) {
-        if self.rows.is_empty() {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
             return;
         }
 
-        self.selected = (self.selected + 1) % self.rows.len();
+        self.selected = (self.selected + 1) % visible_len;
     }
 
     fn open_detail(&mut self) {
+        if self.visible_row_indices().is_empty() {
+            return;
+        }
         self.mode = Mode::Detail;
         self.refresh_detail();
     }
 
     fn next_entity(&mut self) {
-        if self.rows.is_empty() {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
             return;
         }
 
-        self.selected = (self.selected + 1) % self.rows.len();
+        self.selected = (self.selected + 1) % visible_len;
         self.refresh_detail();
     }
 
     fn previous_entity(&mut self) {
-        if self.rows.is_empty() {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
             return;
         }
 
         if self.selected == 0 {
-            self.selected = self.rows.len() - 1;
+            self.selected = visible_len - 1;
         } else {
             self.selected -= 1;
         }
@@ -544,7 +585,7 @@ impl AppState {
     }
 
     fn refresh_detail(&mut self) {
-        if let Some(row) = self.rows.get(self.selected) {
+        if let Some(row) = self.selected_row() {
             self.detail = Some(render_change(&row.change));
         } else {
             self.detail = None;
@@ -648,6 +689,33 @@ impl AppState {
         }
     }
 
+    fn selected_row_index(&self) -> Option<usize> {
+        let visible = self.visible_row_indices();
+        visible.get(self.selected).copied()
+    }
+
+    fn row_matches_filter(&self, row_index: usize) -> bool {
+        match self.review_filter {
+            ReviewFilter::All => true,
+            ReviewFilter::Unreviewed => !self.is_row_reviewed(row_index),
+            ReviewFilter::Reviewed => self.is_row_reviewed(row_index),
+        }
+    }
+
+    fn realign_selection_after_visibility_change(&mut self, prior_selected: usize) {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
+            self.selected = 0;
+            return;
+        }
+
+        self.selected = if prior_selected >= visible_len {
+            0
+        } else {
+            prior_selected
+        };
+    }
+
     fn default_cumulative_base_endpoint_id(&self) -> Option<String> {
         self.navigation_endpoints
             .first()
@@ -699,6 +767,7 @@ impl AppState {
     }
 
     fn recompute_review_identities(&mut self) {
+        let prior_selected = self.selected;
         self.row_review_identities = vec![None; self.rows.len()];
 
         let to_endpoint_id = self
@@ -706,6 +775,7 @@ impl AppState {
             .as_ref()
             .map(|cmp| cmp.to_endpoint_id.as_str());
         if !endpoint_supports_review_hash(to_endpoint_id) {
+            self.realign_selection_after_visibility_change(prior_selected);
             return;
         }
 
@@ -729,6 +799,8 @@ impl AppState {
                 target_content_hash,
             });
         }
+
+        self.realign_selection_after_visibility_change(prior_selected);
     }
 
     fn endpoint_display_label(&self, endpoint_id: &str) -> Option<String> {
@@ -1378,5 +1450,141 @@ mod tests {
             .take_review_state_dirty_snapshot()
             .expect("filter cycle should mark review state dirty");
         assert_eq!(snapshot.filter, ReviewFilter::Unreviewed);
+    }
+
+    #[test]
+    fn filtered_navigation_skips_hidden_rows_in_list_mode() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        app.cycle_review_filter();
+        assert_eq!(app.review_filter(), ReviewFilter::Unreviewed);
+        assert_eq!(app.visible_row_indices().len(), 1);
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("beta")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn toggle_under_active_filter_can_result_in_no_match_state() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        app.cycle_review_filter();
+        app.cycle_review_filter();
+        assert_eq!(app.review_filter(), ReviewFilter::Reviewed);
+        assert_eq!(app.visible_row_indices().len(), 1);
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("alpha")
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        assert!(app.visible_row_indices().is_empty());
+        assert!(app.selected_row().is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn detail_left_right_navigation_respects_active_filter_visibility() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        app.cycle_review_filter();
+        app.cycle_review_filter();
+        assert_eq!(app.review_filter(), ReviewFilter::Reviewed);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("alpha"));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("alpha"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.review_filter(), ReviewFilter::All);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("beta"));
+    }
+
+    #[test]
+    fn detail_mode_space_toggles_reviewed_state_for_opened_entity() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+        assert!(app.detail_title().contains("alpha"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("detail-mode space toggle should mark review state dirty");
+        assert_eq!(snapshot.records.len(), 1);
+        assert!(app.detail_title().contains("alpha"));
+    }
+
+    #[test]
+    fn detail_mode_filter_cycle_retargets_when_focused_entity_becomes_hidden() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("alpha"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.review_filter(), ReviewFilter::Unreviewed);
+        assert!(app.detail_title().contains("beta"));
     }
 }

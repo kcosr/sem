@@ -115,66 +115,82 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     let mut items: Vec<ListItem<'_>> = Vec::new();
     let mut selectable_indices: Vec<usize> = Vec::new();
     let mut current_file: Option<&str> = None;
+    let visible_indices = app.visible_row_indices();
 
-    for row in app.rows() {
-        if current_file != Some(row.file_path.as_str()) {
-            if !items.is_empty() {
-                items.push(ListItem::new(Line::raw("")));
-            }
-            current_file = Some(row.file_path.as_str());
-            items.push(ListItem::new(Line::styled(
-                row.file_path.clone(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-
-        let entity_index = selectable_indices.len();
-        let marker = if entity_index == app.selected() {
-            "▶"
-        } else {
-            " "
-        };
-        let (icon, tag, style) = match row.change.change_type {
-            ChangeType::Added => ("⊕", "[added]", Style::default().fg(Color::Green)),
-            ChangeType::Modified => {
-                if row.change.structural_change == Some(false) {
-                    ("~", "[cosmetic]", Style::default().fg(Color::DarkGray))
-                } else {
-                    ("∆", "[modified]", Style::default().fg(Color::Yellow))
+    if visible_indices.is_empty() {
+        items.push(ListItem::new(Line::styled(
+            format!(
+                "No entities match filter ({})",
+                app.review_filter().as_token()
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for row_index in visible_indices {
+            let Some(row) = app.rows().get(row_index) else {
+                continue;
+            };
+            if current_file != Some(row.file_path.as_str()) {
+                if !items.is_empty() {
+                    items.push(ListItem::new(Line::raw("")));
                 }
+                current_file = Some(row.file_path.as_str());
+                items.push(ListItem::new(Line::styled(
+                    row.file_path.clone(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
             }
-            ChangeType::Deleted => ("⊖", "[deleted]", Style::default().fg(Color::Red)),
-            ChangeType::Moved => ("→", "[moved]", Style::default().fg(Color::Blue)),
-            ChangeType::Renamed => ("↻", "[renamed]", Style::default().fg(Color::Cyan)),
-        };
 
-        let spans = vec![
-            Span::styled(format!("{marker}{icon}"), style),
-            Span::styled(
-                fit_cell(&row.entity_type, widths.type_col),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                fit_cell(&row.entity_name, widths.entity_col),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(fit_cell(tag, widths.change_col), style),
-            Span::raw(" "),
-        ];
-        let mut spans = spans;
-        append_delta_spans(
-            &mut spans,
-            row.added_lines,
-            row.removed_lines,
-            widths.delta_col,
-        );
+            let entity_index = selectable_indices.len();
+            let marker = if entity_index == app.selected() {
+                "▶"
+            } else if app.is_row_reviewed(row_index) {
+                "✓"
+            } else {
+                " "
+            };
+            let (icon, tag, style) = match row.change.change_type {
+                ChangeType::Added => ("⊕", "[added]", Style::default().fg(Color::Green)),
+                ChangeType::Modified => {
+                    if row.change.structural_change == Some(false) {
+                        ("~", "[cosmetic]", Style::default().fg(Color::DarkGray))
+                    } else {
+                        ("∆", "[modified]", Style::default().fg(Color::Yellow))
+                    }
+                }
+                ChangeType::Deleted => ("⊖", "[deleted]", Style::default().fg(Color::Red)),
+                ChangeType::Moved => ("→", "[moved]", Style::default().fg(Color::Blue)),
+                ChangeType::Renamed => ("↻", "[renamed]", Style::default().fg(Color::Cyan)),
+            };
 
-        selectable_indices.push(items.len());
-        items.push(ListItem::new(Line::from(spans)));
+            let spans = vec![
+                Span::styled(format!("{marker}{icon}"), style),
+                Span::styled(
+                    fit_cell(&row.entity_type, widths.type_col),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    fit_cell(&row.entity_name, widths.entity_col),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(fit_cell(tag, widths.change_col), style),
+                Span::raw(" "),
+            ];
+            let mut spans = spans;
+            append_delta_spans(
+                &mut spans,
+                row.added_lines,
+                row.removed_lines,
+                widths.delta_col,
+            );
+
+            selectable_indices.push(items.len());
+            items.push(ListItem::new(Line::from(spans)));
+        }
     }
 
     let list = List::new(items)
@@ -212,10 +228,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
         ]),
         chunks[0],
     );
-    let selected_file_path = app
-        .rows()
-        .get(app.selected())
-        .map(|row| row.file_path.as_str());
+    let selected_file_path = app.selected_row().map(|row| row.file_path.as_str());
     let content_height = usize::from(chunks[1].height.saturating_sub(2)).max(1);
     let start = app.detail_scroll();
 
@@ -265,21 +278,24 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, r cycle-filter, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
 
     FooterParts {
         controls,
-        cells: vec![FooterCell::new('m', app.step_mode().as_token())],
+        cells: vec![
+            FooterCell::new('m', app.step_mode().as_token()),
+            FooterCell::new('r', app.review_filter().as_token()),
+        ],
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
 }
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, Space toggle-reviewed, r cycle-filter, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -290,7 +306,10 @@ fn detail_footer_parts(app: &AppState) -> FooterParts {
 
     FooterParts {
         controls,
-        cells: vec![FooterCell::new('m', app.step_mode().as_token())],
+        cells: vec![
+            FooterCell::new('m', app.step_mode().as_token()),
+            FooterCell::new('r', app.review_filter().as_token()),
+        ],
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
 }
@@ -446,6 +465,8 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
     let help_lines = vec![
         Line::from("List Mode:"),
         Line::from("  ↑/↓ or j/k move selection"),
+        Line::from("  Space toggle reviewed on focused entity"),
+        Line::from("  r cycle review filter (all/unreviewed/reviewed)"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  stepping is disabled for stdin/two-file mode"),
@@ -454,6 +475,8 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("Detail Mode:"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
+        Line::from("  Space toggle reviewed on opened entity"),
+        Line::from("  r cycle review filter"),
         Line::from("  Esc back to list"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
@@ -1161,6 +1184,109 @@ mod tests {
         }
     }
 
+    fn sample_result_two_files() -> DiffResult {
+        DiffResult {
+            changes: vec![
+                SemanticChange {
+                    id: "c2".to_string(),
+                    entity_id: "f::y".to_string(),
+                    change_type: ChangeType::Modified,
+                    entity_type: "function".to_string(),
+                    entity_name: "y".to_string(),
+                    file_path: "src/b.rs".to_string(),
+                    old_file_path: None,
+                    before_content: Some("line1\nline2\n".to_string()),
+                    after_content: Some("line1\nline2 changed\n".to_string()),
+                    commit_sha: None,
+                    author: None,
+                    timestamp: None,
+                    structural_change: Some(true),
+                    before_start_line: Some(1),
+                    before_end_line: Some(2),
+                    after_start_line: Some(1),
+                    after_end_line: Some(2),
+                },
+                SemanticChange {
+                    id: "c1".to_string(),
+                    entity_id: "f::x".to_string(),
+                    change_type: ChangeType::Modified,
+                    entity_type: "function".to_string(),
+                    entity_name: "x".to_string(),
+                    file_path: "src/a.rs".to_string(),
+                    old_file_path: None,
+                    before_content: Some("line1\nline2\nline3\n".to_string()),
+                    after_content: Some("line1\nline2 changed\nline3\n".to_string()),
+                    commit_sha: None,
+                    author: None,
+                    timestamp: None,
+                    structural_change: Some(true),
+                    before_start_line: Some(1),
+                    before_end_line: Some(3),
+                    after_start_line: Some(1),
+                    after_end_line: Some(3),
+                },
+            ],
+            file_count: 2,
+            added_count: 0,
+            modified_count: 2,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        }
+    }
+
+    fn configure_commit_navigation(app: &mut AppState) {
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:aaaaaaa".to_string(),
+                display_ref: Some("HEAD~1".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "aaaaaaa".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:bbbbbbb".to_string(),
+                display_ref: Some("HEAD".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "bbbbbbb".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:aaaaaaa".to_string(), 0usize),
+            ("commit:bbbbbbb".to_string(), 1usize),
+        ]);
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(CommitCursor {
+                endpoint_id: "commit:bbbbbbb".to_string(),
+                index: 1,
+                rev_label: Some("HEAD".to_string()),
+                sha: "bbbbbbb".to_string(),
+                subject: "tip".to_string(),
+                has_older: true,
+                has_newer: false,
+            }),
+            StepMode::Pairwise,
+            None,
+        );
+    }
+
+    fn terminal_buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let mut lines = Vec::new();
+        for y in 0..buffer.area.height {
+            let mut line = String::new();
+            for x in 0..buffer.area.width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
+
     #[test]
     fn format_column_truncates_utf8_safely() {
         let output = format_column(Some(1), "abc漢字def", 8);
@@ -1193,6 +1319,69 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with help overlay");
+    }
+
+    #[test]
+    fn draw_list_mode_shows_no_match_row_when_filter_hides_all_entities() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with no-match state");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("No entities match filter (reviewed)"),
+            "expected no-match row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_list_mode_shows_reviewed_marker_for_non_selected_reviewed_rows() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        configure_commit_navigation(&mut app);
+        assert!(app.toggle_selected_reviewed());
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with reviewed marker");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("✓∆"),
+            "expected reviewed marker for non-selected row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_list_mode_hides_file_headers_without_visible_entities() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        configure_commit_navigation(&mut app);
+        assert!(app.toggle_selected_reviewed());
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with filtered file headers");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            !rendered.contains("src/a.rs"),
+            "expected filtered-out file header to be hidden, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("src/b.rs"),
+            "expected visible file header to remain, got:\n{rendered}"
+        );
     }
 
     #[test]
@@ -1294,7 +1483,7 @@ mod tests {
     fn list_footer_parts_include_mode_cell() {
         let app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
         let footer = list_footer_parts(&app);
-        assert_eq!(render_footer_cells(&footer.cells), "m: pairwise");
+        assert_eq!(render_footer_cells(&footer.cells), "m: pairwise | r: all");
         assert_eq!(footer.status, None);
     }
 
@@ -1340,7 +1529,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let footer = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&footer.cells), "m: cumulative");
+        assert_eq!(render_footer_cells(&footer.cells), "m: cumulative | r: all");
     }
 
     #[test]
@@ -1349,11 +1538,11 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let baseline = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&baseline.cells), "m: pairwise");
+        assert_eq!(render_footer_cells(&baseline.cells), "m: pairwise | r: all");
 
         app.set_commit_loading(true);
         let loading = detail_footer_parts(&app);
-        assert_eq!(render_footer_cells(&loading.cells), "m: pairwise");
+        assert_eq!(render_footer_cells(&loading.cells), "m: pairwise | r: all");
         assert_eq!(loading.status.as_deref(), Some("Loading..."));
     }
 

@@ -265,10 +265,6 @@ impl ReviewStateStore {
     }
 }
 
-pub fn review_state_file_rel_path() -> &'static str {
-    ".sem/tui-review-state.json"
-}
-
 pub fn endpoint_supports_review_hash(endpoint_id: Option<&str>) -> bool {
     let Some(endpoint_id) = endpoint_id else {
         return false;
