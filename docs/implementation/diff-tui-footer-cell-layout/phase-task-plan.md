@@ -115,6 +115,21 @@ Gate:
 - Notes:
   - narrow addendum scope; implementation-phase reviews can occur during execution.
 
+### 9.4 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `5aa1640`
+- Acceptance evidence:
+  - manual: cross-checked `design.md`, `schema-proposal.md`, and this phase plan for H0 consistency after applying accepted contract clarifications (cell delimiter, status-vs-cell priority, and runtime/schema wording).
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to H0 docs scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to H0 docs scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (69 passed).
+- Review run IDs + triage outcomes:
+  - `r_20260308194820428_3cd2c8d1` (`generic-gemini`): `accept` status-vs-cell priority lock, value-domain clarification wording, and explicit long-status contention coverage in H2; `defer` none; `reject` none.
+  - `r_20260308194853933_c855769f` (`generic-pi`): `accept` canonical cell delimiter lock, enum-vs-runtime-leniency wording, rendered-field scope clarification, and controls-area contract note; `defer` fixed width-budget threshold and unknown-key/fallback dedicated tests to H1/H2; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-footer-cell-layout/schema-proposal.md`
