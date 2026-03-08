@@ -1,12 +1,13 @@
 mod app;
 mod detail;
 mod render;
+mod review_state;
 
 use std::collections::HashMap;
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
@@ -23,6 +24,9 @@ use crate::commands::diff::{
     StepMode, StepNavigationBootstrap, TuiSourceMode,
 };
 use app::PendingNavigationRequest;
+use review_state::ReviewStateStoreInit;
+
+const REVIEW_STATE_DEBOUNCE_MS: u64 = 500;
 
 pub fn run_tui(
     result: &DiffResult,
@@ -72,7 +76,25 @@ pub fn run_tui(
         mode,
         base_endpoint_id,
     );
+    let review_cwd = context.cwd.clone();
     let mut reload_coordinator = ReloadCoordinator::new(context);
+    let review_store = match review_state::ReviewStateStore::initialize(&review_cwd) {
+        ReviewStateStoreInit::Available(store) => Some(store),
+        ReviewStateStoreInit::Unavailable(_) => None,
+    };
+    let mut pending_review_save = None;
+    let mut review_save_deadline = None;
+
+    if let Some(store) = review_store.as_ref() {
+        let load_result = store.load();
+        app_state.apply_review_state(load_result.state);
+        if let Some(warning) = load_result.warning {
+            app_state.set_review_status_message(Some(warning));
+        }
+        if load_result.compacted {
+            app_state.mark_review_state_dirty();
+        }
+    }
 
     if let Ok(size) = terminal.size() {
         app_state.set_viewport(size.width, size.height);
@@ -137,6 +159,39 @@ pub fn run_tui(
             app_state.apply_commit_step_response(response);
         }
         app_state.set_commit_loading(reload_coordinator.has_active_request());
+
+        if let Some(snapshot) = app_state.take_review_state_dirty_snapshot() {
+            pending_review_save = Some(snapshot);
+            review_save_deadline =
+                Some(Instant::now() + Duration::from_millis(REVIEW_STATE_DEBOUNCE_MS));
+        }
+
+        if let (Some(store), Some(snapshot), Some(deadline)) = (
+            review_store.as_ref(),
+            pending_review_save.as_ref(),
+            review_save_deadline,
+        ) {
+            if Instant::now() >= deadline {
+                if let Err(error) = store.save(snapshot) {
+                    app_state.set_review_status_message(Some(format!(
+                        "review persistence write failed: {error}"
+                    )));
+                }
+                pending_review_save = None;
+                review_save_deadline = None;
+            }
+        }
+    }
+
+    if let Some(snapshot) = app_state.take_review_state_dirty_snapshot() {
+        pending_review_save = Some(snapshot);
+    }
+    if let (Some(store), Some(snapshot)) = (review_store.as_ref(), pending_review_save.as_ref()) {
+        if let Err(error) = store.save(snapshot) {
+            app_state.set_review_status_message(Some(format!(
+                "review persistence write failed: {error}"
+            )));
+        }
     }
 
     drop(guard);

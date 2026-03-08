@@ -273,7 +273,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
     FooterParts {
         controls,
         cells: vec![FooterCell::new('m', app.step_mode().as_token())],
-        status: footer_status_message(app.commit_loading(), None),
+        status: footer_status_message(app.commit_loading(), app.status_message()),
     }
 }
 
@@ -291,7 +291,7 @@ fn detail_footer_parts(app: &AppState) -> FooterParts {
     FooterParts {
         controls,
         cells: vec![FooterCell::new('m', app.step_mode().as_token())],
-        status: footer_status_message(app.commit_loading(), app.commit_status_message()),
+        status: footer_status_message(app.commit_loading(), app.status_message()),
     }
 }
 

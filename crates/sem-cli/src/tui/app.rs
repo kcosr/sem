@@ -4,6 +4,10 @@ use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 
+use super::review_state::{
+    build_logical_entity_key, build_target_content_hash, current_updated_at,
+    endpoint_supports_review_hash, ReviewFilter, ReviewIdentity, ReviewStateData,
+};
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
     StepComparison, StepEndpoint, StepMode, TuiSourceMode,
@@ -53,6 +57,11 @@ pub struct AppState {
     commit_loading: bool,
     commit_status_message: Option<String>,
     pending_navigation_request: Option<PendingNavigationRequest>,
+    review_filter: ReviewFilter,
+    reviewed_records: HashMap<ReviewIdentity, String>,
+    row_review_identities: Vec<Option<ReviewIdentity>>,
+    review_status_message: Option<String>,
+    review_state_dirty: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +73,7 @@ pub enum PendingNavigationRequest {
 impl AppState {
     pub fn from_diff_result(result: &DiffResult, initial_view: DiffView) -> Self {
         let rows = Self::rows_from_diff_result(result);
+        let row_count = rows.len();
 
         Self {
             rows,
@@ -87,6 +97,11 @@ impl AppState {
             commit_loading: false,
             commit_status_message: None,
             pending_navigation_request: None,
+            review_filter: ReviewFilter::All,
+            reviewed_records: HashMap::new(),
+            row_review_identities: vec![None; row_count],
+            review_status_message: None,
+            review_state_dirty: false,
         }
     }
 
@@ -142,6 +157,7 @@ impl AppState {
             }
         };
         self.recompute_comparison();
+        self.recompute_review_identities();
     }
 
     pub fn commit_source_mode(&self) -> TuiSourceMode {
@@ -163,6 +179,82 @@ impl AppState {
 
     pub fn commit_status_message(&self) -> Option<&str> {
         self.commit_status_message.as_deref()
+    }
+
+    pub fn status_message(&self) -> Option<&str> {
+        self.commit_status_message
+            .as_deref()
+            .or(self.review_status_message.as_deref())
+    }
+
+    pub fn review_filter(&self) -> ReviewFilter {
+        self.review_filter
+    }
+
+    pub fn is_row_reviewed(&self, row_index: usize) -> bool {
+        self.row_review_identities
+            .get(row_index)
+            .and_then(|identity| identity.as_ref())
+            .map(|identity| self.reviewed_records.contains_key(identity))
+            .unwrap_or(false)
+    }
+
+    pub fn apply_review_state(&mut self, state: ReviewStateData) {
+        self.review_filter = state.filter;
+        self.reviewed_records = state.records;
+        self.review_state_dirty = false;
+    }
+
+    pub fn set_review_status_message(&mut self, message: Option<String>) {
+        self.review_status_message = message;
+    }
+
+    pub fn mark_review_state_dirty(&mut self) {
+        self.review_state_dirty = true;
+    }
+
+    pub fn take_review_state_dirty_snapshot(&mut self) -> Option<ReviewStateData> {
+        if !self.review_state_dirty {
+            return None;
+        }
+
+        self.review_state_dirty = false;
+        Some(self.review_state_snapshot())
+    }
+
+    pub fn review_state_snapshot(&self) -> ReviewStateData {
+        ReviewStateData {
+            filter: self.review_filter,
+            records: self.reviewed_records.clone(),
+        }
+    }
+
+    pub fn toggle_selected_reviewed(&mut self) -> bool {
+        let Some(identity) = self
+            .row_review_identities
+            .get(self.selected)
+            .and_then(|identity| identity.as_ref())
+            .cloned()
+        else {
+            self.review_status_message =
+                Some("Review state unavailable for current comparator endpoint".to_string());
+            return false;
+        };
+
+        if self.reviewed_records.contains_key(&identity) {
+            self.reviewed_records.remove(&identity);
+        } else {
+            self.reviewed_records.insert(identity, current_updated_at());
+        }
+
+        self.review_state_dirty = true;
+        self.review_status_message = None;
+        true
+    }
+
+    pub fn cycle_review_filter(&mut self) {
+        self.review_filter = self.review_filter.cycle();
+        self.review_state_dirty = true;
     }
 
     pub fn set_commit_loading(&mut self, loading: bool) {
@@ -261,6 +353,7 @@ impl AppState {
         self.cumulative_base_endpoint_id = snapshot.base_endpoint_id;
         self.comparison = Some(snapshot.comparison);
         self.rows = Self::rows_from_diff_result(&snapshot.result);
+        self.recompute_review_identities();
         self.selected = 0;
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
@@ -603,6 +696,39 @@ impl AppState {
             from_endpoint_id,
             to_endpoint_id: to_endpoint.endpoint_id.clone(),
         });
+    }
+
+    fn recompute_review_identities(&mut self) {
+        self.row_review_identities = vec![None; self.rows.len()];
+
+        let to_endpoint_id = self
+            .comparison
+            .as_ref()
+            .map(|cmp| cmp.to_endpoint_id.as_str());
+        if !endpoint_supports_review_hash(to_endpoint_id) {
+            return;
+        }
+
+        let mut fallback_ordinals: HashMap<(String, String, String), usize> = HashMap::new();
+        for (row_index, row) in self.rows.iter().enumerate() {
+            let group_key = (
+                row.file_path.clone(),
+                row.entity_type.clone(),
+                row.entity_name.clone(),
+            );
+            let ordinal = fallback_ordinals.entry(group_key).or_insert(0);
+            *ordinal = ordinal.saturating_add(1);
+
+            let logical_entity_key = build_logical_entity_key(&row.change, *ordinal);
+            let Some(target_content_hash) = build_target_content_hash(&row.change) else {
+                continue;
+            };
+
+            self.row_review_identities[row_index] = Some(ReviewIdentity {
+                logical_entity_key,
+                target_content_hash,
+            });
+        }
     }
 
     fn endpoint_display_label(&self, endpoint_id: &str) -> Option<String> {
@@ -1204,5 +1330,53 @@ mod tests {
             Some("unable to resolve commit (previous snapshot retained)")
         );
         assert!(!app.commit_loading());
+    }
+
+    #[test]
+    fn review_toggle_tracks_review_records_when_hash_context_is_available() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        let first_snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("toggle should mark review state dirty");
+        assert_eq!(first_snapshot.records.len(), 1);
+
+        assert!(app.toggle_selected_reviewed());
+        let second_snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("second toggle should mark review state dirty");
+        assert_eq!(second_snapshot.records.len(), 0);
+    }
+
+    #[test]
+    fn review_toggle_noops_when_comparator_hash_source_is_unavailable() {
+        let mut app = app();
+        assert!(!app.toggle_selected_reviewed());
+        assert_eq!(
+            app.status_message(),
+            Some("Review state unavailable for current comparator endpoint")
+        );
+    }
+
+    #[test]
+    fn review_filter_cycle_marks_persistence_dirty() {
+        let mut app = app();
+        assert_eq!(app.review_filter(), ReviewFilter::All);
+
+        app.cycle_review_filter();
+        let snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("filter cycle should mark review state dirty");
+        assert_eq!(snapshot.filter, ReviewFilter::Unreviewed);
     }
 }
