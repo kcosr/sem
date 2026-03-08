@@ -248,6 +248,32 @@ Gate:
   - both external reviews were tracked to terminal stream events (`result.completed`).
   - H0 gate objective is contract/flag lock; JS/TS baseline failures are documented but out-of-scope for Rust/docs H0 closure.
 
+### 9.5 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `a801f9d`
+- Acceptance evidence:
+  - `npm run lint` => `NO-GO` for JS/TS workspace baseline in current environment (missing Node/module typings and dependency resolution; unrelated to H1 Rust scope).
+  - `npm test` => `NO-GO` in current environment (`vitest` binary unavailable).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (`134 passed, 0 failed`), including H1-focused graph snapshot coverage in `crates/sem-cli/src/tui/http_state.rs`:
+    - unavailable reasons (`unsupportedSourceMode`, `graphBuildFailed`, `selectionNotResolvable`),
+    - direct-id selection mapping,
+    - overlap fallback + tie-break behavior,
+    - no-line-range fallback selection behavior,
+    - impact truncation semantics,
+    - locked summary format behavior.
+  - manual: verified H1 scope boundaries are preserved (graph snapshot provider and mapping model added; no HTTP listener/runtime wiring yet).
+- Review run IDs + triage outcomes:
+  - `r_20260308231001564_35100f4a` (`generic-gemini`) => `failed` (`result.failed`, reviewer tool contract issue: unavailable `run_shell_command` in reviewer environment). Retry required by policy.
+  - `r_20260308231107554_556c2f8a` (`generic-gemini`, retry) => `failed` (`result.failed`, Gemini API `TerminalQuotaError`).
+  - `r_20260308231118128_041be432` (`generic-pi`):
+    - `accept`: explicit `selection=None` coverage, explicit no-line-range fallback coverage, non-zero summary format coverage, and readability refactor for snapshot state matching.
+    - `defer`: dead-code warnings for H2/H3-owned wiring (`HttpSourceMode::TwoFile`, token helpers, `panel_rows`, panel cap constant), edge-case `usize::MAX` cap guard hardening, and expanded diagnostics/perf hardening.
+    - `reject`: \"missing tie-break test\" (already covered by overlap fallback test using equal-overlap candidates with start-line tie-break).
+- Go/No-Go: GO
+- Notes:
+  - mandatory two-review policy was attempted with one retry on Gemini per execution policy; both Gemini attempts failed for external/runtime reasons and fallback is documented here.
+  - H1 gate requirement (`cargo test -p sem-cli` with snapshot/mapping tests) is satisfied.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-http-state-impact-panel/schema-proposal.md`
