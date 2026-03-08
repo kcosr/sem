@@ -266,7 +266,34 @@ Template:
   - both review runs completed via session stream terminal event `result.completed`.
   - accepted PI follow-ups were applied before phase close and re-verified with `cargo` test gates.
 
-### 9.6 Authoring-Stage Evidence (Spec Plan)
+### 9.6 H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `4f464cc`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` => pass (`48 passed, 0 failed`) with added H3 hardening tests:
+    - `reload_coordinator_coalesces_rapid_step_sequence_to_latest_pending_request`
+    - `app_quits_immediately_even_while_commit_reload_is_marked_loading`
+    - `is_commit_navigation_mode_requires_explicit_commit_tui_mode`
+    - `load_failed_response_keeps_existing_rows_and_reports_retained_snapshot`
+    - `draw_list_mode_with_commit_navigation_header_succeeds`
+  - `cargo test -p sem-core` => pass (`41 passed, 0 failed`).
+  - `cargo fmt --check -p sem-cli -p sem-core` => pass.
+  - `TIMEFORMAT='real=%3R'; time cargo test -p sem-cli tui::tests::reload_coordinator_coalesces_rapid_step_sequence_to_latest_pending_request -- --exact` => `real=0.177s` (threshold: `<= 1.000s`, PASS).
+  - `TIMEFORMAT='real=%3R'; time cargo test -p sem-cli commands::diff::tests::process_commit_step_request_transitions_cursor_on_lineage -- --exact` => `real=0.206s` (threshold: `<= 1.000s`, PASS).
+  - `npm run lint` => `NO-GO` for global TS workspace baseline (missing module/type dependencies in current environment; unrelated to Rust implementation/doc closure scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust implementation/doc closure scope).
+  - manual: verified release-doc updates landed (`README.md`, `crates/README.md`, `CHANGELOG.md`) and match runtime key/scope behavior (`[`/`]` commit stepping only in commit-mode TUI).
+- Review run IDs + triage outcomes:
+  - `r_20260308164437005_2dce038e` (`generic-gemini`): `accept` H3 closure requirements (Section 9 H3 evidence + performance threshold notes + implementation-plan absence rationale); `defer` 200ms poll-latency tuning to post-H3 optimization track; `reject` none.
+  - `r_20260308164557943_1d20672d` (`generic-pi`): `accept` stale test-count docs fix and additional hardening tests (`is_commit_navigation_mode`, `LoadFailed` path, commit-enabled render path); `defer` off-lineage/single-commit extra tests and worker-disconnect surfacing to future hardening; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - both review runs completed via session stream terminal event `result.completed`.
+  - `docs/implementation/implementation-plan.md` is absent/retired in this repository; equivalent milestone status is recorded here in Section 9.6 per plan requirement.
+  - `docs/reference/architecture.md` is absent/retired in this repository; cross-cutting architecture status is therefore captured in this topic plan evidence + updated public READMEs/changelog.
+  - proposal/doc statuses remain `Locked` for `schema-proposal.md`, `design.md`, and this `phase-task-plan.md` at H3 close.
+
+### 9.7 Authoring-Stage Evidence (Spec Plan)
 - Completion date: 2026-03-08
 - Commit hash(es): N/A (planning stream)
 - Acceptance evidence:
