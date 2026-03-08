@@ -5,7 +5,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
-    TuiSourceMode,
+    TuiRangeContext, TuiSourceMode,
 };
 
 use super::detail::{render_change, LineKind, RenderedDiff, SideBySideLine};
@@ -44,6 +44,7 @@ pub struct AppState {
     viewport_height: u16,
     commit_source_mode: TuiSourceMode,
     commit_cursor: Option<CommitCursor>,
+    range_context: Option<TuiRangeContext>,
     commit_loading: bool,
     commit_status_message: Option<String>,
     pending_commit_action: Option<CommitStepAction>,
@@ -67,6 +68,7 @@ impl AppState {
             viewport_height: 40,
             commit_source_mode: TuiSourceMode::Unsupported,
             commit_cursor: None,
+            range_context: None,
             commit_loading: false,
             commit_status_message: None,
             pending_commit_action: None,
@@ -113,6 +115,14 @@ impl AppState {
         self.commit_cursor = cursor;
     }
 
+    pub fn configure_range_context(&mut self, range_context: Option<TuiRangeContext>) {
+        self.range_context = range_context;
+    }
+
+    pub fn range_context(&self) -> Option<&TuiRangeContext> {
+        self.range_context.as_ref()
+    }
+
     pub fn commit_source_mode(&self) -> TuiSourceMode {
         self.commit_source_mode
     }
@@ -137,23 +147,26 @@ impl AppState {
         self.commit_loading = loading;
     }
 
-    pub fn commit_context_line(&self) -> String {
+    pub fn commit_context_line(&self) -> Option<String> {
         if !self.commit_navigation_enabled() {
-            return "Commit navigation unavailable for current input mode".to_string();
+            return None;
         }
 
         let Some(cursor) = self.commit_cursor() else {
-            return "Commit metadata unavailable".to_string();
+            return Some("Commit metadata unavailable".to_string());
         };
 
         let short_sha: String = cursor.sha.chars().take(7).collect();
         match &cursor.rev_label {
-            Some(rev_label) => format!("{rev_label}  {short_sha}  {}", cursor.subject),
-            None => format!("{short_sha}  {}", cursor.subject),
+            Some(rev_label) => Some(format!("{rev_label}  {short_sha}  {}", cursor.subject)),
+            None => Some(format!("{short_sha}  {}", cursor.subject)),
         }
     }
 
     pub fn queue_commit_action(&mut self, action: CommitStepAction) {
+        if !self.commit_navigation_enabled() {
+            return;
+        }
         self.pending_commit_action = Some(action);
         self.commit_status_message = None;
     }
@@ -731,6 +744,7 @@ mod tests {
     #[test]
     fn bracket_keys_queue_commit_actions_in_list_and_detail_modes() {
         let mut app = app();
+        app.configure_commit_navigation(TuiSourceMode::Commit, None);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
         assert_eq!(
@@ -792,10 +806,7 @@ mod tests {
     fn commit_context_line_formats_for_supported_and_unsupported_modes() {
         let mut app = app();
         app.configure_commit_navigation(TuiSourceMode::Unsupported, None);
-        assert_eq!(
-            app.commit_context_line(),
-            "Commit navigation unavailable for current input mode"
-        );
+        assert_eq!(app.commit_context_line(), None);
 
         app.configure_commit_navigation(
             TuiSourceMode::Commit,
@@ -809,7 +820,7 @@ mod tests {
         );
         assert_eq!(
             app.commit_context_line(),
-            "HEAD~3  0123456  feat: add stepping"
+            Some("HEAD~3  0123456  feat: add stepping".to_string())
         );
 
         app.configure_commit_navigation(
@@ -822,7 +833,10 @@ mod tests {
                 has_newer: false,
             }),
         );
-        assert_eq!(app.commit_context_line(), "abcdef0  chore: cleanup");
+        assert_eq!(
+            app.commit_context_line(),
+            Some("abcdef0  chore: cleanup".to_string())
+        );
     }
 
     #[test]
@@ -869,10 +883,7 @@ mod tests {
         app.set_commit_loading(true);
         assert!(app.commit_loading());
         app.queue_commit_action(CommitStepAction::Older);
-        assert_eq!(
-            app.take_pending_commit_action(),
-            Some(CommitStepAction::Older)
-        );
+        assert_eq!(app.take_pending_commit_action(), None);
 
         app.apply_commit_step_response(CommitStepResponse {
             applied_request_id: 2,

@@ -80,7 +80,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                app.commit_context_line(),
+                context_header_line(app, chunks[0].width),
                 Style::default().fg(Color::LightCyan),
             ),
             Line::raw(""),
@@ -187,7 +187,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                app.commit_context_line(),
+                context_header_line(app, chunks[0].width),
                 Style::default().fg(Color::LightCyan),
             ),
             Line::raw(app.detail_title()),
@@ -272,6 +272,44 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &str, loading: bool) {
         Paragraph::new("Loading...").alignment(Alignment::Right),
         footer_chunks[1],
     );
+}
+
+fn context_header_line(app: &AppState, width: u16) -> String {
+    if let Some(range) = app.range_context() {
+        return format_range_context_line(width, &range.from, &range.to);
+    }
+
+    app.commit_context_line().unwrap_or_default()
+}
+
+fn format_range_context_line(width: u16, from: &str, to: &str) -> String {
+    let left = format!("from  {from}");
+    let right = format!("to  {to}");
+    let total = usize::from(width);
+    if total == 0 {
+        return String::new();
+    }
+
+    let min_gap = 3usize;
+    let left_len = left.chars().count();
+    let right_len = right.chars().count();
+    if left_len + right_len + min_gap <= total {
+        let gap = total.saturating_sub(left_len + right_len);
+        return format!("{left}{}{}", " ".repeat(gap), right);
+    }
+
+    let left_width = total / 2;
+    let right_width = total.saturating_sub(left_width + min_gap);
+    if right_width == 0 {
+        return fit_cell(&left, total);
+    }
+
+    format!(
+        "{}{}{}",
+        fit_cell(&left, left_width),
+        " ".repeat(min_gap),
+        fit_cell_right(&right, right_width)
+    )
 }
 
 fn draw_help_overlay(frame: &mut Frame<'_>) {
@@ -958,7 +996,7 @@ mod tests {
     use sem_core::model::change::{ChangeType, SemanticChange};
     use sem_core::parser::differ::DiffResult;
 
-    use crate::commands::diff::{CommitCursor, DiffView, TuiSourceMode};
+    use crate::commands::diff::{CommitCursor, DiffView, TuiRangeContext, TuiSourceMode};
     use crate::tui::app::AppState;
 
     fn sample_result() -> DiffResult {
@@ -1045,6 +1083,21 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw should succeed with commit metadata header");
+    }
+
+    #[test]
+    fn draw_list_mode_with_range_header_succeeds() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.configure_range_context(Some(TuiRangeContext {
+            from: "HEAD~3  abcdef0  feat: start".to_string(),
+            to: "HEAD  1234567  feat: finish".to_string(),
+        }));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with range header");
     }
 
     #[test]

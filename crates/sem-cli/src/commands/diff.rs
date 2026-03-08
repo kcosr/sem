@@ -81,6 +81,12 @@ pub struct CommitNavigationContext {
 }
 
 #[derive(Clone, Debug)]
+pub struct TuiRangeContext {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct CommitSnapshot {
     pub cursor: CommitCursor,
     pub result: DiffResult,
@@ -311,11 +317,12 @@ fn compute_diff_result(file_changes: &[FileChange]) -> ComputePhase {
 fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Option<String>, String> {
     if opts.tui {
         let commit_navigation = build_commit_navigation_context(opts)?;
+        let range_context = build_tui_range_context(opts)?;
         if result.changes.is_empty() && commit_navigation.is_none() {
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(result, opts.diff_view, commit_navigation)
+        tui::run_tui(result, opts.diff_view, commit_navigation, range_context)
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -376,6 +383,39 @@ pub fn build_commit_navigation_context(
     };
     let cursor = build_commit_cursor(&git, &context, &current_sha)?;
     Ok(Some((context, cursor)))
+}
+
+pub fn build_tui_range_context(opts: &DiffOptions) -> Result<Option<TuiRangeContext>, String> {
+    let (from_ref, to_ref) = match (&opts.from, &opts.to) {
+        (Some(from_ref), Some(to_ref))
+            if opts.tui
+                && opts.files.is_empty()
+                && !opts.stdin
+                && !opts.staged
+                && opts.commit.is_none() =>
+        {
+            (from_ref.as_str(), to_ref.as_str())
+        }
+        _ => return Ok(None),
+    };
+
+    let git = GitBridge::open(Path::new(&opts.cwd))
+        .map_err(|_| "Not inside a Git repository.".to_string())?;
+    let from = describe_ref_with_details(&git, from_ref)?;
+    let to = describe_ref_with_details(&git, to_ref)?;
+
+    Ok(Some(TuiRangeContext { from, to }))
+}
+
+fn describe_ref_with_details(git: &GitBridge, refspec: &str) -> Result<String, String> {
+    let sha = git
+        .resolve_commit_sha(refspec)
+        .map_err(|error| format!("resolving commit {refspec}: {error}"))?;
+    let short_sha: String = sha.chars().take(7).collect();
+    let subject = git
+        .get_commit_subject(&sha)
+        .map_err(|error| format!("resolving subject for {refspec}: {error}"))?;
+    Ok(format!("{refspec}  {short_sha}  {subject}"))
 }
 
 pub fn process_commit_step_request(

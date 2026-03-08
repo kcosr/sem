@@ -19,13 +19,14 @@ use sem_core::parser::differ::DiffResult;
 
 use crate::commands::diff::{
     process_commit_step_request, CommitCursor, CommitLoadStatus, CommitNavigationContext,
-    CommitStepRequest, CommitStepResponse, DiffView, TuiSourceMode,
+    CommitStepRequest, CommitStepResponse, DiffView, TuiRangeContext, TuiSourceMode,
 };
 
 pub fn run_tui(
     result: &DiffResult,
     initial_view: DiffView,
     commit_navigation: Option<(CommitNavigationContext, CommitCursor)>,
+    range_context: Option<TuiRangeContext>,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -53,6 +54,7 @@ pub fn run_tui(
         )
     };
     app_state.configure_commit_navigation(source_mode, cursor);
+    app_state.configure_range_context(range_context);
     let mut reload_coordinator = ReloadCoordinator::new(context);
 
     if let Ok(size) = terminal.size() {
