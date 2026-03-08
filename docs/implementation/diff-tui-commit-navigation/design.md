@@ -38,13 +38,15 @@ Current TUI flow is single-shot: one `DiffResult` is computed before launch and 
 3. Keep `Left/Right` bound to entity navigation in detail mode.
 4. Commit stepping reloads semantic diff context in-place; no TUI restart.
 5. TUI loop remains synchronous (`crossterm` loop); reload runs in worker thread(s) with `std::sync::mpsc` channel back into main loop.
-6. Cancellation policy in v1: no hard cancellation of in-flight git/diff compute; use generation token and apply only latest completion (`latest request wins`), dropping stale results.
+6. Cancellation policy in v1: no hard cancellation of in-flight git/diff compute; use request generation IDs (`requestId` in schema) and apply only latest completion (`latest request wins`), dropping stale results.
 7. Backpressure policy in v1: coalesce repeated step requests to at most one pending target while one worker is in flight.
 8. When stepping is unavailable (stdin/two-file/staged/range mode), keys are inert and help text indicates disabled state.
 9. Header includes command line plus commit metadata line with fallback text for unavailable metadata.
 10. History walk semantics are first-parent linear history for deterministic navigation.
 11. Dirty working tree does not affect commit stepping snapshots; commit-mode stepping reads commit trees only.
 12. Merge commits compare against first parent only; behavior is deterministic and documented.
+13. Newer-step resolution uses a frozen first-parent lineage cache captured at TUI startup (session-head to root). `[`/`]` are index moves in that cache when current commit is on lineage; if not on lineage, `revLabel=null` and `hasNewer=false` until a lineage commit is selected.
+14. Status/error hints are transient: retained while loading, then replaced on next status event; boundary/unsupported hints clear on the next successful reload or next step-key attempt.
 
 ## 7. Contract / Interface Semantics
 This feature is a CLI/TUI contract (not HTTP).
@@ -69,9 +71,10 @@ Top header must show:
    - preferred: `<rev-label>  <short-sha>  <subject>`
    - fallback: `<short-sha>  <subject>`
    - unavailable path: `Commit navigation unavailable for current input mode`.
+3. Double-space separation in examples is presentation guidance, not a strict parser contract.
 
 Rev-label lock:
-1. `rev-label` is computed against frozen session head SHA captured at TUI startup.
+1. `rev-label` is computed against frozen session head SHA captured at TUI startup after resolving the initial commit ref.
 2. If current commit is on frozen session-head first-parent chain, show `HEAD~N`.
 3. If not on that lineage (detached/arbitrary ref), `rev-label` is omitted (null internally).
 
@@ -110,6 +113,9 @@ Rev-label lock:
 ## 11. Test Strategy
 1. App state tests:
    - commit cursor stepping boundaries (including root commit)
+   - newer-step correctness across first-parent lineage (including merge commits)
+   - rev-label derivation edges (session head, off-lineage commit, large `N`)
+   - single-commit repository boundary behavior (`hasOlder=false`, `hasNewer=false`)
    - loading/state/status transitions
    - unsupported mode inert behavior
 2. TUI loop tests:

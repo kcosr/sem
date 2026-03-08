@@ -23,12 +23,13 @@ Deliver in-TUI commit stepping for `sem diff --tui --commit <rev>` with asynchro
 Deliverables:
 1. Final lock on stepping semantics and keybindings (`[`/`]`).
 2. Source-mode compatibility matrix and unsupported-mode behavior lock.
-3. Async/reload contract lock: generation token semantics, coalesced pending request, stale-result rejection.
+3. Async/reload contract lock: request generation ID (`requestId`/`appliedRequestId`) semantics, coalesced pending request, stale-result rejection.
 4. Rev-label derivation lock (`HEAD~N` relative to frozen session head when derivable).
 
 Acceptance Criteria:
 1. Contracts are explicit for boundaries, unsupported modes, and failure behavior.
 2. No ambiguity around detached/arbitrary refs, dirty working tree semantics, or merge first-parent behavior.
+3. H0 is contract verification/triage closure for locked docs, not feature implementation authoring.
 
 Gate:
 - `GO` only if design/schema docs are internally consistent and review-triaged.
@@ -89,6 +90,8 @@ Gate:
 | rapid step coalescing | unit/integration | simulated repeated `[`/`]` key sequences |
 | stale result suppression | unit/integration | generation token tests |
 | boundary handling | unit/manual | root commit and newer/older boundary no-op assertions |
+| newer-step correctness | unit/integration | first-parent lineage stepping assertions (including merges) |
+| rev-label edge cases | unit tests | `HEAD~N` derivation for head/off-lineage/large-`N` cases |
 | quit during in-flight reload | unit/integration | quit action + worker result ignore assertions |
 | header metadata rendering | render test/manual | header line includes SHA + subject + optional revLabel |
 | unsupported mode behavior | unit/manual | stdin/two-file/staged/range inert keys |

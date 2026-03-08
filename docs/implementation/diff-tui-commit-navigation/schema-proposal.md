@@ -21,6 +21,8 @@ Lock the internal CLI/TUI contract for commit-stepping reloads so keyboard navig
 }
 ```
 
+`requestId` is the request generation token for latest-request-wins behavior.
+
 ### 2.2 Logical Reload Success Response (internal)
 ```json
 {
@@ -62,9 +64,36 @@ Lock the internal CLI/TUI contract for commit-stepping reloads so keyboard navig
 
 ## 3. JSON Schema Skeleton
 
+### 3.1 Reload Request Schema Skeleton (internal)
+
 ```json
 {
-  "$id": "sem.tui.commit-navigation.v1",
+  "$id": "sem.tui.commit-navigation.request.v1",
+  "type": "object",
+  "required": ["requestId", "action", "current", "sourceMode"],
+  "properties": {
+    "requestId": { "type": "integer", "minimum": 0 },
+    "action": { "type": "string", "enum": ["stepOlder", "stepNewer"] },
+    "current": {
+      "type": "object",
+      "required": ["sha", "revLabel"],
+      "properties": {
+        "sha": { "type": "string", "minLength": 7 },
+        "revLabel": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "sourceMode": { "type": "string", "enum": ["commit"] }
+  },
+  "additionalProperties": false
+}
+```
+
+### 3.2 Reload Response Schema Skeleton (internal)
+
+```json
+{
+  "$id": "sem.tui.commit-navigation.response.v1",
   "type": "object",
   "required": ["ok", "status", "appliedRequestId"],
   "properties": {
@@ -75,42 +104,47 @@ Lock the internal CLI/TUI contract for commit-stepping reloads so keyboard navig
     },
     "appliedRequestId": { "type": "integer", "minimum": 0 },
     "snapshot": {
-      "type": ["object", "null"],
-      "required": ["cursor", "summary", "changes"],
-      "properties": {
-        "cursor": {
+      "oneOf": [
+        { "type": "null" },
+        {
           "type": "object",
-          "required": ["sha", "subject", "hasOlder", "hasNewer"],
+          "required": ["cursor", "summary", "changes"],
           "properties": {
-            "revLabel": { "type": ["string", "null"] },
-            "sha": { "type": "string", "minLength": 7 },
-            "subject": { "type": "string" },
-            "hasOlder": { "type": "boolean" },
-            "hasNewer": { "type": "boolean" }
+            "cursor": {
+              "type": "object",
+              "required": ["sha", "subject", "hasOlder", "hasNewer"],
+              "properties": {
+                "revLabel": { "type": ["string", "null"] },
+                "sha": { "type": "string", "minLength": 7 },
+                "subject": { "type": "string" },
+                "hasOlder": { "type": "boolean" },
+                "hasNewer": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            "summary": {
+              "type": "object",
+              "required": ["fileCount", "added", "modified", "deleted", "moved", "renamed", "total"],
+              "properties": {
+                "fileCount": { "type": "integer", "minimum": 0 },
+                "added": { "type": "integer", "minimum": 0 },
+                "modified": { "type": "integer", "minimum": 0 },
+                "deleted": { "type": "integer", "minimum": 0 },
+                "moved": { "type": "integer", "minimum": 0 },
+                "renamed": { "type": "integer", "minimum": 0 },
+                "total": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "changes": {
+              "type": "array",
+              "description": "Opaque SemanticChange[] payload from in-memory DiffResult.changes. Shape remains owned by sem-core model and is validated via CLI/TUI tests.",
+              "items": { "type": "object" }
+            }
           },
           "additionalProperties": false
-        },
-        "summary": {
-          "type": "object",
-          "required": ["fileCount", "added", "modified", "deleted", "moved", "renamed", "total"],
-          "properties": {
-            "fileCount": { "type": "integer", "minimum": 0 },
-            "added": { "type": "integer", "minimum": 0 },
-            "modified": { "type": "integer", "minimum": 0 },
-            "deleted": { "type": "integer", "minimum": 0 },
-            "moved": { "type": "integer", "minimum": 0 },
-            "renamed": { "type": "integer", "minimum": 0 },
-            "total": { "type": "integer", "minimum": 0 }
-          },
-          "additionalProperties": false
-        },
-        "changes": {
-          "type": "array",
-          "description": "SemanticChange[] payload equivalent to in-memory DiffResult.changes",
-          "items": { "type": "object" }
         }
-      },
-      "additionalProperties": false
+      ]
     },
     "error": { "type": ["string", "null"] },
     "retainPreviousSnapshot": { "type": ["boolean", "null"] }
@@ -128,7 +162,7 @@ Locked points:
 3. On reload success, cursor metadata (`sha`, `subject`, boundary booleans) is mandatory.
 4. On reload failure, previous snapshot is retained.
 5. Unsupported modes and boundary no-op are non-fatal statuses.
-6. `requestId`/`appliedRequestId` determine stale-result rejection deterministically.
+6. `requestId` (request generation token) / `appliedRequestId` determine stale-result rejection deterministically.
 
 ## 5. Deterministic Reject / Status Lock
 1. Unsupported source mode returns `unsupportedMode` status (no crash).
