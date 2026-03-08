@@ -75,7 +75,10 @@ This is a CLI/TUI runtime contract (not HTTP).
 1. Footer includes a dedicated cell `e: <mode>` where mode is lowercase token.
 2. Cell is always shown in list and detail views.
 3. Footer cell order follows shared contract: `m`, `r`, `e`.
-4. Footer layout remains single-line and non-modal.
+4. Cells follow shared delimiter contract: ` | `.
+5. Status text remains in dedicated status slot and is independent from cell values.
+6. Under constrained width, status truncates/omits before state-cell eviction.
+7. Footer layout remains single-line and non-modal.
 
 ### 7.3 Detail Rendering Contract
 1. `hunk` mode behavior remains equivalent to existing grouped-hunk rendering.

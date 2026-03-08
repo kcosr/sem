@@ -1368,6 +1368,28 @@ mod tests {
     }
 
     #[test]
+    fn footer_layout_widths_keep_cell_width_stable_under_long_status_contention() {
+        let cell_text = "m: cumulative";
+        let (_, cell_without_status, _) = footer_layout_widths(20, cell_text, None);
+        let (controls_width, cell_with_status, status_width) =
+            footer_layout_widths(20, cell_text, Some("Step snapshot loaded and retained"));
+
+        assert_eq!(controls_width, 0);
+        assert_eq!(cell_with_status, cell_without_status);
+        assert_eq!(controls_width + cell_with_status + status_width, 20);
+        assert!(status_width <= 20 - cell_with_status);
+    }
+
+    #[test]
+    fn footer_layout_widths_omit_status_when_cells_consume_narrow_footer() {
+        let (controls_width, cell_width, status_width) =
+            footer_layout_widths(5, "m: pairwise", Some("Loading..."));
+        assert_eq!(cell_width, 5);
+        assert_eq!(controls_width, 0);
+        assert_eq!(status_width, 0);
+    }
+
+    #[test]
     fn list_column_widths_use_full_available_content_width() {
         let widths = compute_list_column_widths(120);
         let content_width = usize::from(120_u16.saturating_sub(4));

@@ -83,6 +83,9 @@ The TUI currently has no way to mark progress. Operators reviewing large ranges 
 18. Footer composition lock:
    - preserve `m: <pairwise|cumulative>` cell
    - add review filter cell as `r: <all|unreviewed|reviewed>`
+   - delimit cells using shared ` | ` separator contract
+   - keep status text in dedicated status slot (separate from cell values)
+   - under constrained width, status truncates/omits before cell eviction
    - do not remove or reorder reserved `e` position
 
 ## 7. Contract / Interface Semantics
@@ -101,6 +104,7 @@ This is a CLI/TUI contract (not HTTP).
 3. `reviewed`: show only entities with matching reviewed record.
 4. Empty filtered result produces explicit no-match state; does not auto-reset filter.
 5. Footer filter state is rendered as `r: <state>`.
+6. Footer cell rendering inherits shared separator and ordering behavior from footer-cell contract.
 
 ### 7.3 Persistence Contract
 1. File path: `.sem/tui-review-state.json`.
