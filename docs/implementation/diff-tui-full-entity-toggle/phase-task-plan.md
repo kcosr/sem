@@ -228,7 +228,7 @@ Gate:
 
 ### 9.5 H1 Evidence
 - Completion date: 2026-03-08
-- Commit hash(es): PENDING (to be recorded after H1 milestone commit)
+- Commit hash(es): `32b26cd2504900cbbee7bf514b05c7d5a0e6eb39`
 - Acceptance evidence:
   - `cargo test -p sem-cli` (run from `crates/`) => pass (`110 passed`, `0 failed`).
   - manual: verified startup defaults to `hunk`, `e` toggles in list/detail, and detail-mode toggles reset `detail_hunk_index` + `detail_scroll` to `0`.
