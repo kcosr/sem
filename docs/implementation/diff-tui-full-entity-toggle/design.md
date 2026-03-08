@@ -44,23 +44,29 @@ For this topic, "entity" means the selected semantic entity row (`function`, `cl
 8. Entity mode renders full entity diff line stream (all lines in scope), not grouped snippets.
 9. Entity mode computes hunk anchors from changed regions in that full stream; a changed region is a contiguous run of non-equal diff operations.
 10. Anchors are ordered and deduplicated per active view renderer.
-11. Example anchor semantics:
+11. Anchor coordinate space is a 0-based rendered row index in the active view output:
+   - unified view: index into `unified_lines`
+   - side-by-side view: index into `side_by_side_lines` (shared row index for both columns)
+12. Example anchor semantics:
    - change runs at logical lines 12-14 and 30 produce anchor list `[12, 30]` (first line index per changed region).
-12. On `e` toggle while in detail view:
+13. On `e` toggle while in detail view:
    - `detail_hunk_index` resets to `0`
    - `detail_scroll` resets to `0`
-13. Render pipeline computes both mode artifacts from a single diff pass per detail refresh and keeps them in memory for fast toggling.
-14. Help overlay line text is locked as:
+14. Render pipeline computes both mode artifacts from a single diff pass per detail refresh and keeps them in memory for fast toggling.
+15. Help overlay line text is locked as:
    - `e toggle hunk/entity context`
-15. `n/p` uses active mode anchors:
+16. `n/p` uses active mode anchors:
    - hunk mode: grouped hunk anchors
    - entity mode: changed-region anchors in full stream
-16. Anchor behavior is defined for all four combinations:
+17. Anchor behavior is defined for all four combinations:
    - hunk + unified
    - hunk + side-by-side
    - entity + unified
    - entity + side-by-side
-17. No top-of-screen status banner is added for this mode.
+18. In side-by-side mode, `n/p` scroll targets the shared row anchor index; both columns move together via the single detail scroll cursor.
+19. `entity-context mode` and `diff view mode` are orthogonal axes; `e` and `Tab` apply independently in either order.
+20. `e` toggle is always accepted during placeholder/loading states; it updates mode state immediately and does not alter status-slot loading semantics.
+21. No top-of-screen status banner is added for this mode.
 
 ## 7. Contract / Interface Semantics
 This is a CLI/TUI runtime contract (not HTTP).
@@ -70,6 +76,7 @@ This is a CLI/TUI runtime contract (not HTTP).
 2. Existing keys remain unchanged (`n/p`, `Tab`, `[`/`]`, `m`, etc.).
 3. In list mode, `e` updates mode state immediately and applies when entering detail.
 4. In detail mode, toggle resets hunk index and scroll to the top before next render.
+5. `e` and `Tab` remain independent toggles and do not block each other.
 
 ### 7.2 Footer Contract
 1. Footer includes a dedicated cell `e: <mode>` where mode is lowercase token.
@@ -89,6 +96,8 @@ This is a CLI/TUI runtime contract (not HTTP).
    - unchanged render lines
    - empty anchor list
    - deterministic `n/p` boundary no-op behavior.
+6. Anchor values are always 0-based row indices in the active renderer output vector.
+7. In side-by-side view, anchor indices target the shared row stream, not independent left/right line numbers.
 
 ## 8. Service / Module Design
 1. `tui/app.rs`
@@ -130,8 +139,10 @@ This is a CLI/TUI runtime contract (not HTTP).
 5. Matrix tests for `(hunk|entity) x (unified|side-by-side)` anchor behavior.
 6. Mode-toggle-in-detail tests at non-zero hunk index (index/scroll reset behavior).
 7. Entity-mode test for identical before/after content (empty anchor list).
-8. Render snapshot/frame tests for entity mode in both views.
-9. Regression tests ensuring stepping/view toggles still function.
+8. Placeholder-content tests proving `e` toggles mode token while keeping non-fatal placeholder behavior.
+9. Round-trip toggle tests (`hunk -> entity -> hunk`) including boundary index starting points.
+10. Render snapshot/frame tests for entity mode in both views.
+11. Regression tests ensuring stepping/view toggles still function.
 
 ## 12. Acceptance Criteria
 1. Operator can press `e` to switch between `hunk` and `entity` mode.

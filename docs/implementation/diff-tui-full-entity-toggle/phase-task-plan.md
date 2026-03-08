@@ -25,6 +25,7 @@ Deliverables:
 4. Lock changed-region definition for entity anchors.
 5. Lock toggle-reset semantics in detail (`detail_hunk_index=0`, `detail_scroll=0`).
 6. Lock 2x2 anchor behavior matrix: `(hunk|entity) x (unified|side-by-side)`.
+7. Lock anchor coordinate space as 0-based rendered row indices in the active view output (`unified_lines` / shared `side_by_side_lines` row stream).
 
 Acceptance:
 1. No ambiguity on how `n/p` behaves per mode/view combination.
@@ -95,6 +96,8 @@ Gate:
 | anchor dedupe/order | renderer test | deterministic anchor vector assertions |
 | mode/view matrix | app/detail tests | `(hunk|entity) x (unified|side-by-side)` traversal |
 | identical-content entity mode | renderer/app test | unchanged lines + empty anchors + `n/p` boundary no-op |
+| placeholder toggle semantics | app/detail test | `e` toggles mode token while placeholder behavior remains non-fatal |
+| round-trip toggle behavior | app/detail test | `hunk -> entity -> hunk` preserves deterministic reset/navigation behavior |
 | footer cell | render test | `e: hunk` / `e: entity` appears list+detail and coexists with `m` + optional `r` |
 | help text | render/help test | `e toggle hunk/entity context` visible |
 | regression safety | full tests | `cargo test -p sem-cli && cargo test -p sem-core` |
@@ -201,6 +204,27 @@ Gate:
 - Go/No-Go: GO
 - Notes:
   - review completion confirmed from live session stream terminal events (`result.completed`).
+
+### 9.4 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): PENDING (to be recorded after H0 milestone commit)
+- Acceptance evidence:
+  - manual: cross-checked `schema-proposal.md`, `design.md`, and `phase-task-plan.md` for H0 contract consistency and removed side-by-side anchor ambiguity.
+  - docs update: locked anchor coordinate space as 0-based rendered row indices in both unified and side-by-side render streams.
+  - docs update: locked `e`/`Tab` orthogonality and placeholder/loading toggle semantics.
+  - docs update: expanded verification matrix to include placeholder toggle and round-trip mode-toggle coverage.
+- Review run IDs + triage outcomes:
+  - `r_20260308210406018_40ead61d`:
+    - `accept`: no additional edits required beyond explicit lock clarifications already present in this phase.
+    - `defer`: large-entity performance policy and extreme-width footer contention strategy remain deferred per Section 7.
+    - `reject`: whitespace-specific changed-region interpretation change (contract remains diff-op based and renderer-defined).
+  - `r_20260308210439614_c0f1f699`:
+    - `accept`: added side-by-side anchor coordinate/scroll semantics, loading/placeholder toggle semantics, and clarified illustrative footer payload context.
+    - `defer`: maximum anchor/line-count guard policy remains deferred per Section 7.
+    - `reject`: additional prerequisite proof artifact (user handoff already states prerequisite landed and this plan keeps it as explicit handoff requirement).
+- Go/No-Go: GO
+- Notes:
+  - both reviews completed with stream terminal events (`result.completed`).
 
 ## 10. Execution Handoff Contract
 0. Prerequisite:

@@ -42,6 +42,7 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
   "rendered": "e: entity"
 }
 ```
+`precedingCells` is illustrative context only (it is not part of the locked footer cell schema for this topic).
 
 ## 3. JSON Schema Skeleton
 
@@ -98,10 +99,13 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
    - `detailScroll` to `0`
 4. `hunk` mode anchor source is `groupedHunks`.
 5. `entity` mode anchor source is `changedRegions` from full entity render stream.
-6. `changedRegions` means contiguous non-equal diff-op runs; each anchor is the first rendered line index of that run.
-7. Footer cell render format is exactly lowercase `e: <token>`.
-8. Startup default is `hunk`.
-9. Footer cell ordering must follow shared contract `m`, `r`, `e`; this topic owns only `e`.
+6. `changedRegions` means contiguous non-equal diff-op runs; each anchor is the first rendered row index of that run in the active view output vector.
+7. Anchor coordinate space is always 0-based rendered row index:
+   - `unified`: index into `unified_lines`
+   - `sideBySide`: index into `side_by_side_lines` shared row stream
+8. Footer cell render format is exactly lowercase `e: <token>`.
+9. Startup default is `hunk`.
+10. Footer cell ordering must follow shared contract `m`, `r`, `e`; this topic owns only `e`.
 
 ## 5. Deterministic Reject / Status Lock
 1. Unknown mode token must be rejected in internal constructors/tests; runtime falls back to `hunk` only via guarded initialization, not silent parse from user input.
@@ -110,6 +114,7 @@ Lock an internal runtime contract for entity-context mode toggling and mode-spec
 4. View/mode anchor selection must be deterministic for all combinations of:
    - `hunk` or `entity`
    - `unified` or `sideBySide`
+5. `e` toggle is valid during placeholder/loading states; mode flip remains deterministic and status-slot loading semantics remain unchanged.
 
 ## 6. Notes
 1. This schema is internal to Rust TUI runtime and not an external CLI JSON output contract.
