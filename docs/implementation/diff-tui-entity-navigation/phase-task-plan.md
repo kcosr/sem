@@ -218,6 +218,35 @@ Example template:
 - Notes:
   - Phase gate outcome is GO for H0 Rust scope (`sem-core`) with mandatory Node gate failures documented as pre-existing baseline/environmental constraints.
 
+### H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `f412e48`
+- Acceptance evidence:
+  - `npm run lint` => `FAIL` (pre-existing TypeScript workspace/type dependency errors unrelated to Rust H1 scope)
+  - `npm test` => `FAIL` (`vitest` missing in current environment; unchanged by H1 scope)
+  - `cargo test -p sem-cli` => `PASS` (10 passed, 0 failed), including:
+    - CLI contract tests for `--tui`/`--format` conflict and `--diff-view` semantics
+    - stdin + two-file acquisition tests
+    - TUI list-state navigation/quit tests
+  - `cargo test -p sem-core` => `PASS` (35 passed, 0 failed) regression check
+  - manual:
+    - `cargo run -p sem-cli -- diff --tui --format json` => deterministic clap error (mutual exclusivity enforced)
+    - `cargo run -p sem-cli -- diff --diff-view unified` => deterministic clap error (`--tui` required)
+    - `printf '[]' | cargo run -p sem-cli -- diff --stdin --tui` => `No changes detected.` and exit 0 (no TUI launch)
+    - two-file same-content run with `--tui` => `No semantic changes detected.` and exit 0 (deterministic non-launch path)
+- Review run IDs + triage outcomes:
+  - `r_20260308063746875_35679ccf` (generic-gemini):
+    - `accept`: add explicit comment clarifying stable file sort preserves within-file semantic order.
+    - `defer`: none.
+    - `reject`: none.
+  - `r_20260308063903839_cbda06a2` (generic-pi):
+    - `accept`: add missing low-risk tests (`files.len()==1` error path, `q` quit behavior, empty-change TUI fallback).
+    - `defer`: two-file `old_file_path` enrichment for future detail headers (consider during H2 detail rendering scope).
+    - `reject`: no-change behavior mismatch claim (current empty-result TUI path returns existing no-change terminal message); inert non-TUI `diff_view` presence and profile-duration concern accepted as non-blocking.
+- Go/No-Go: GO
+- Notes:
+  - H1 deliverables closed: diff command phase refactor, `--tui`/`--diff-view` contracts, and TUI list-loop skeleton with deterministic stdin/two-file handling.
+
 ## 10. Execution Start Point
 Execution stream must start at `H0` only.
 
