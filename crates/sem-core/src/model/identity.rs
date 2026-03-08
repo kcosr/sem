@@ -7,6 +7,41 @@ pub struct MatchResult {
     pub changes: Vec<SemanticChange>,
 }
 
+fn build_change(
+    id: String,
+    entity_id: String,
+    change_type: ChangeType,
+    entity_type: String,
+    entity_name: String,
+    file_path: String,
+    old_file_path: Option<String>,
+    before_entity: Option<&SemanticEntity>,
+    after_entity: Option<&SemanticEntity>,
+    commit_sha: Option<&str>,
+    author: Option<&str>,
+    structural_change: Option<bool>,
+) -> SemanticChange {
+    SemanticChange {
+        id,
+        entity_id,
+        change_type,
+        entity_type,
+        entity_name,
+        file_path,
+        old_file_path,
+        before_content: before_entity.map(|entity| entity.content.clone()),
+        after_content: after_entity.map(|entity| entity.content.clone()),
+        commit_sha: commit_sha.map(String::from),
+        author: author.map(String::from),
+        timestamp: None,
+        structural_change,
+        before_start_line: before_entity.map(|entity| entity.start_line),
+        before_end_line: before_entity.map(|entity| entity.end_line),
+        after_start_line: after_entity.map(|entity| entity.start_line),
+        after_end_line: after_entity.map(|entity| entity.end_line),
+    }
+}
+
 /// 3-phase entity matching algorithm:
 /// 1. Exact ID match — same entity ID in before/after → modified or unchanged
 /// 2. Content hash match — same hash, different ID → renamed or moved
@@ -39,21 +74,20 @@ pub fn match_entities(
                     (Some(before_sh), Some(after_sh)) => Some(before_sh != after_sh),
                     _ => None,
                 };
-                changes.push(SemanticChange {
-                    id: format!("change::{id}"),
-                    entity_id: id.to_string(),
-                    change_type: ChangeType::Modified,
-                    entity_type: after_entity.entity_type.clone(),
-                    entity_name: after_entity.name.clone(),
-                    file_path: after_entity.file_path.clone(),
-                    old_file_path: None,
-                    before_content: Some(before_entity.content.clone()),
-                    after_content: Some(after_entity.content.clone()),
-                    commit_sha: commit_sha.map(String::from),
-                    author: author.map(String::from),
-                    timestamp: None,
+                changes.push(build_change(
+                    format!("change::{id}"),
+                    id.to_string(),
+                    ChangeType::Modified,
+                    after_entity.entity_type.clone(),
+                    after_entity.name.clone(),
+                    after_entity.file_path.clone(),
+                    None,
+                    Some(before_entity),
+                    Some(after_entity),
+                    commit_sha,
+                    author,
                     structural_change,
-                });
+                ));
             }
         }
     }
@@ -119,21 +153,20 @@ pub fn match_entities(
                 None
             };
 
-            changes.push(SemanticChange {
-                id: format!("change::{}", after_entity.id),
-                entity_id: after_entity.id.clone(),
+            changes.push(build_change(
+                format!("change::{}", after_entity.id),
+                after_entity.id.clone(),
                 change_type,
-                entity_type: after_entity.entity_type.clone(),
-                entity_name: after_entity.name.clone(),
-                file_path: after_entity.file_path.clone(),
+                after_entity.entity_type.clone(),
+                after_entity.name.clone(),
+                after_entity.file_path.clone(),
                 old_file_path,
-                before_content: Some(before_entity.content.clone()),
-                after_content: Some(after_entity.content.clone()),
-                commit_sha: commit_sha.map(String::from),
-                author: author.map(String::from),
-                timestamp: None,
-                structural_change: None,
-            });
+                Some(before_entity),
+                Some(after_entity),
+                commit_sha,
+                author,
+                None,
+            ));
         }
     }
 
@@ -208,21 +241,20 @@ pub fn match_entities(
                         None
                     };
 
-                    changes.push(SemanticChange {
-                        id: format!("change::{}", after_entity.id),
-                        entity_id: after_entity.id.clone(),
+                    changes.push(build_change(
+                        format!("change::{}", after_entity.id),
+                        after_entity.id.clone(),
                         change_type,
-                        entity_type: after_entity.entity_type.clone(),
-                        entity_name: after_entity.name.clone(),
-                        file_path: after_entity.file_path.clone(),
+                        after_entity.entity_type.clone(),
+                        after_entity.name.clone(),
+                        after_entity.file_path.clone(),
                         old_file_path,
-                        before_content: Some(matched.content.clone()),
-                        after_content: Some(after_entity.content.clone()),
-                        commit_sha: commit_sha.map(String::from),
-                        author: author.map(String::from),
-                        timestamp: None,
-                        structural_change: None,
-                    });
+                        Some(matched),
+                        Some(after_entity),
+                        commit_sha,
+                        author,
+                        None,
+                    ));
                 }
             }
         }
@@ -230,40 +262,38 @@ pub fn match_entities(
 
     // Remaining unmatched before = deleted
     for entity in before.iter().filter(|e| !matched_before.contains(e.id.as_str())) {
-        changes.push(SemanticChange {
-            id: format!("change::deleted::{}", entity.id),
-            entity_id: entity.id.clone(),
-            change_type: ChangeType::Deleted,
-            entity_type: entity.entity_type.clone(),
-            entity_name: entity.name.clone(),
-            file_path: entity.file_path.clone(),
-            old_file_path: None,
-            before_content: Some(entity.content.clone()),
-            after_content: None,
-            commit_sha: commit_sha.map(String::from),
-            author: author.map(String::from),
-            timestamp: None,
-            structural_change: None,
-        });
+        changes.push(build_change(
+            format!("change::deleted::{}", entity.id),
+            entity.id.clone(),
+            ChangeType::Deleted,
+            entity.entity_type.clone(),
+            entity.name.clone(),
+            entity.file_path.clone(),
+            None,
+            Some(entity),
+            None,
+            commit_sha,
+            author,
+            None,
+        ));
     }
 
     // Remaining unmatched after = added
     for entity in after.iter().filter(|e| !matched_after.contains(e.id.as_str())) {
-        changes.push(SemanticChange {
-            id: format!("change::added::{}", entity.id),
-            entity_id: entity.id.clone(),
-            change_type: ChangeType::Added,
-            entity_type: entity.entity_type.clone(),
-            entity_name: entity.name.clone(),
-            file_path: entity.file_path.clone(),
-            old_file_path: None,
-            before_content: None,
-            after_content: Some(entity.content.clone()),
-            commit_sha: commit_sha.map(String::from),
-            author: author.map(String::from),
-            timestamp: None,
-            structural_change: None,
-        });
+        changes.push(build_change(
+            format!("change::added::{}", entity.id),
+            entity.id.clone(),
+            ChangeType::Added,
+            entity.entity_type.clone(),
+            entity.name.clone(),
+            entity.file_path.clone(),
+            None,
+            None,
+            Some(entity),
+            commit_sha,
+            author,
+            None,
+        ));
     }
 
     MatchResult { changes }
@@ -302,7 +332,14 @@ mod tests {
     use super::*;
     use crate::utils::hash::content_hash;
 
-    fn make_entity(id: &str, name: &str, content: &str, file_path: &str) -> SemanticEntity {
+    fn make_entity_with_lines(
+        id: &str,
+        name: &str,
+        content: &str,
+        file_path: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> SemanticEntity {
         SemanticEntity {
             id: id.to_string(),
             file_path: file_path.to_string(),
@@ -312,19 +349,41 @@ mod tests {
             content: content.to_string(),
             content_hash: content_hash(content),
             structural_hash: None,
-            start_line: 1,
-            end_line: 1,
+            start_line,
+            end_line,
             metadata: None,
         }
     }
 
+    fn make_entity(id: &str, name: &str, content: &str, file_path: &str) -> SemanticEntity {
+        make_entity_with_lines(id, name, content, file_path, 1, 1)
+    }
+
     #[test]
     fn test_exact_match_modified() {
-        let before = vec![make_entity("a::f::foo", "foo", "old content", "a.ts")];
-        let after = vec![make_entity("a::f::foo", "foo", "new content", "a.ts")];
+        let before = vec![make_entity_with_lines(
+            "a::f::foo",
+            "foo",
+            "old content",
+            "a.ts",
+            4,
+            8,
+        )];
+        let after = vec![make_entity_with_lines(
+            "a::f::foo",
+            "foo",
+            "new content",
+            "a.ts",
+            5,
+            11,
+        )];
         let result = match_entities(&before, &after, "a.ts", None, None, None);
         assert_eq!(result.changes.len(), 1);
         assert_eq!(result.changes[0].change_type, ChangeType::Modified);
+        assert_eq!(result.changes[0].before_start_line, Some(4));
+        assert_eq!(result.changes[0].before_end_line, Some(8));
+        assert_eq!(result.changes[0].after_start_line, Some(5));
+        assert_eq!(result.changes[0].after_end_line, Some(11));
     }
 
     #[test]
@@ -337,22 +396,130 @@ mod tests {
 
     #[test]
     fn test_added_deleted() {
-        let before = vec![make_entity("a::f::old", "old", "content", "a.ts")];
-        let after = vec![make_entity("a::f::new", "new", "different", "a.ts")];
+        let before = vec![make_entity_with_lines(
+            "a::f::old",
+            "old",
+            "content",
+            "a.ts",
+            10,
+            12,
+        )];
+        let after = vec![make_entity_with_lines(
+            "a::f::new",
+            "new",
+            "different",
+            "a.ts",
+            20,
+            22,
+        )];
         let result = match_entities(&before, &after, "a.ts", None, None, None);
         assert_eq!(result.changes.len(), 2);
-        let types: Vec<ChangeType> = result.changes.iter().map(|c| c.change_type).collect();
-        assert!(types.contains(&ChangeType::Deleted));
-        assert!(types.contains(&ChangeType::Added));
+        let deleted = result
+            .changes
+            .iter()
+            .find(|change| change.change_type == ChangeType::Deleted)
+            .expect("expected deleted change");
+        assert_eq!(deleted.before_start_line, Some(10));
+        assert_eq!(deleted.before_end_line, Some(12));
+        assert_eq!(deleted.after_start_line, None);
+        assert_eq!(deleted.after_end_line, None);
+
+        let added = result
+            .changes
+            .iter()
+            .find(|change| change.change_type == ChangeType::Added)
+            .expect("expected added change");
+        assert_eq!(added.before_start_line, None);
+        assert_eq!(added.before_end_line, None);
+        assert_eq!(added.after_start_line, Some(20));
+        assert_eq!(added.after_end_line, Some(22));
     }
 
     #[test]
     fn test_content_hash_rename() {
-        let before = vec![make_entity("a::f::old", "old", "same content", "a.ts")];
-        let after = vec![make_entity("a::f::new", "new", "same content", "a.ts")];
+        let before = vec![make_entity_with_lines(
+            "a::f::old",
+            "old",
+            "same content",
+            "a.ts",
+            30,
+            35,
+        )];
+        let after = vec![make_entity_with_lines(
+            "a::f::new",
+            "new",
+            "same content",
+            "a.ts",
+            40,
+            44,
+        )];
         let result = match_entities(&before, &after, "a.ts", None, None, None);
         assert_eq!(result.changes.len(), 1);
         assert_eq!(result.changes[0].change_type, ChangeType::Renamed);
+        assert_eq!(result.changes[0].before_start_line, Some(30));
+        assert_eq!(result.changes[0].before_end_line, Some(35));
+        assert_eq!(result.changes[0].after_start_line, Some(40));
+        assert_eq!(result.changes[0].after_end_line, Some(44));
+    }
+
+    #[test]
+    fn test_content_hash_moved_cross_file_line_ranges() {
+        let before = vec![make_entity_with_lines(
+            "src/a.ts::f::old",
+            "old",
+            "same content",
+            "src/a.ts",
+            7,
+            13,
+        )];
+        let after = vec![make_entity_with_lines(
+            "src/b.ts::f::new",
+            "new",
+            "same content",
+            "src/b.ts",
+            17,
+            24,
+        )];
+        let result = match_entities(&before, &after, "src/b.ts", None, None, None);
+        assert_eq!(result.changes.len(), 1);
+        let change = &result.changes[0];
+        assert_eq!(change.change_type, ChangeType::Moved);
+        assert_eq!(change.old_file_path.as_deref(), Some("src/a.ts"));
+        assert_eq!(change.before_start_line, Some(7));
+        assert_eq!(change.before_end_line, Some(13));
+        assert_eq!(change.after_start_line, Some(17));
+        assert_eq!(change.after_end_line, Some(24));
+    }
+
+    #[test]
+    fn test_similarity_moved_cross_file_line_ranges() {
+        let before = vec![make_entity_with_lines(
+            "src/a.ts::f::old",
+            "old",
+            "alpha beta gamma delta",
+            "src/a.ts",
+            50,
+            55,
+        )];
+        let after = vec![make_entity_with_lines(
+            "src/b.ts::f::new",
+            "new",
+            "alpha beta gamma epsilon",
+            "src/b.ts",
+            60,
+            66,
+        )];
+        let similarity = |_: &SemanticEntity, _: &SemanticEntity| 0.95;
+        let result = match_entities(&before, &after, "src/b.ts", Some(&similarity), None, None);
+
+        assert_eq!(result.changes.len(), 1);
+        let change = &result.changes[0];
+        assert_eq!(change.change_type, ChangeType::Moved);
+        assert_eq!(change.old_file_path.as_deref(), Some("src/a.ts"));
+        assert_eq!(change.before_start_line, Some(50));
+        assert_eq!(change.before_end_line, Some(55));
+        assert_eq!(change.after_start_line, Some(60));
+        assert_eq!(change.after_end_line, Some(66));
     }
 
     #[test]
