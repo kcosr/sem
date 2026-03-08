@@ -221,6 +221,33 @@ Gate:
 - Notes:
   - review completion was validated from live session stream events, not redirected logs.
 
+### 9.4 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `64acab5`
+- Acceptance evidence:
+  - `npm run lint` => `NO-GO` for JS/TS workspace baseline in current environment (missing Node/module typings and dependency resolution across legacy TS surface; unrelated to H0 Rust/docs scope).
+  - `npm test` => `NO-GO` in current environment (`vitest` binary unavailable).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (`125 passed, 0 failed`), including new CLI parse coverage for `--tui-http` and `--tui-http-port`.
+  - manual: locked H0 contract ambiguities in docs:
+    - explicit internal-to-contract source mode mapping (`Unified|Commit` -> `repository`, stdin -> `stdin`, two-file -> `twoFile`),
+    - explicit `selection.ui` schema shape and value domains,
+    - explicit `404`/`405` error schema skeletons,
+    - explicit `impact.total`/`impact.truncated` cap semantics,
+    - explicit `graph.reason` availability invariant and panel-summary informational note.
+- Review run IDs + triage outcomes:
+  - `r_20260308230051740_0a9b4e96` (`generic-gemini`):
+    - `accept`: source-mode naming/mapping clarity, cap/truncation semantics, graph/impact alignment invariant.
+    - `defer`: explicit bind-failure operator UX indicator to H2 runtime integration scope.
+    - `reject`: none.
+  - `r_20260308230224201_cf3a8d89` (`generic-pi`):
+    - `accept`: source-mode mapping lock, `selection.ui` schema lock, `404`/`405` schema lock, truncation semantics lock, graph reason invariant.
+    - `defer`: deeper snapshot atomicity/per-cycle consistency hardening to H2 concurrency/runtime scope.
+    - `reject`: none.
+- Go/No-Go: GO
+- Notes:
+  - both external reviews were tracked to terminal stream events (`result.completed`).
+  - H0 gate objective is contract/flag lock; JS/TS baseline failures are documented but out-of-scope for Rust/docs H0 closure.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-http-state-impact-panel/schema-proposal.md`
