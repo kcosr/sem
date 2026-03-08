@@ -194,6 +194,30 @@ Example template:
 - Notes:
   - Initial review command with forbidden CLI override was retried using compliant invocation and then completed successfully.
 
+### H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `8549bd3`
+- Acceptance evidence:
+  - `npm run lint` => `FAIL` (pre-existing TypeScript workspace/type dependency errors unrelated to Rust `sem-core`; unchanged by H0 scope)
+  - `npm test` => `FAIL` (`vitest` not installed in current environment; unchanged by H0 scope)
+  - `cargo test -p sem-core` => `PASS` (35 passed, 0 failed), including new line-range coverage:
+    - `model::change::tests::test_semantic_change_serializes_range_fields_as_camel_case`
+    - `model::change::tests::test_semantic_change_omits_none_optional_fields`
+    - `model::identity::tests::test_similarity_moved_cross_file_line_ranges`
+  - manual: verified all `SemanticChange` construction paths in `match_entities` now route through `build_change` and populate optional before/after line fields.
+- Review run IDs + triage outcomes:
+  - `r_20260308062646574_383aadf6` (generic-gemini):
+    - `accept`: add serialization assertions for new line-range fields, add fuzzy/similarity-path line-range test.
+    - `defer`: none.
+    - `reject`: speculative future timestamp propagation concern (no current timestamp producer in this phase scope).
+  - `r_20260308062821707_6f93d8f6` (generic-pi):
+    - `accept`: add explicit serialization coverage and similarity-path line-range coverage.
+    - `defer`: sem-cli JSON formatter parity updates (out of H0 deliverable scope; scheduled for later execution phase).
+    - `reject`: schema-minimum risk on zero-based parser lines (no evidence of zero-based emission in current sem-core plugins/tests).
+- Go/No-Go: GO
+- Notes:
+  - Phase gate outcome is GO for H0 Rust scope (`sem-core`) with mandatory Node gate failures documented as pre-existing baseline/environmental constraints.
+
 ## 10. Execution Start Point
 Execution stream must start at `H0` only.
 
