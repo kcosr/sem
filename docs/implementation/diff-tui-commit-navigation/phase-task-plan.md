@@ -205,7 +205,23 @@ Template:
 - Notes: <optional>
 ```
 
-### 9.3 Authoring-Stage Evidence (Spec Plan)
+### 9.3 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `ca3e726`
+- Acceptance evidence:
+  - doc review: `schema-proposal.md` + `design.md` + `phase-task-plan.md` consistency pass after lock clarifications (request schema, requestId terminology, lineage/newer-step policy, transient status lifetime, explicit H0 verification wording).
+  - `npm run lint` => `NO-GO` for global TS workspace baseline (missing module/type dependencies in current environment; unrelated to H0 doc-only scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to H0 doc-only scope).
+  - manual: confirmed H0 gate condition (contracts internally consistent + review-triaged) is satisfied.
+- Review run IDs + triage outcomes:
+  - `r_20260308162006991_79da9925` (`generic-gemini`): `accept` requestId terminology lock and lineage/test clarity updates; `defer` worker-disconnect/memory hardening details to H3; `reject` none.
+  - `r_20260308162039986_3da9384a` (`generic-pi`): `accept` request schema and newer-step/rev-label/status-lifetime clarifications; `defer` numeric stall timeout/perf threshold specifics to H3; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - both review runs completed via session stream terminal event `result.completed`.
+  - global `npm` gate failures are pre-existing environment/workspace issues and were logged for traceability.
+
+### 9.4 Authoring-Stage Evidence (Spec Plan)
 - Completion date: 2026-03-08
 - Commit hash(es): N/A (planning stream)
 - Acceptance evidence:
