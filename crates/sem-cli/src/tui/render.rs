@@ -278,7 +278,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, r cycle-filter, e context, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -296,7 +296,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, Space toggle-reviewed, r cycle-filter, e context, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
