@@ -228,6 +228,27 @@ Gate:
 - Notes:
   - changes are compatibility clarifications and do not alter review-state feature scope or persistence schema version.
 
+### 9.5 H0 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `eadaa64`
+- Acceptance evidence:
+  - manual: cross-checked and updated `design.md`, `schema-proposal.md`, and this plan for H0 lock completeness:
+    - finalized `r` keybinding wording
+    - locked toggle-under-filter cursor behavior
+    - locked startup `uiPrefs.reviewFilter` restore/default behavior
+    - locked canonical UTC `updatedAt` format and canonicalized `repoId` derivation wording
+    - clarified add/delete hash material and non-UTF-8 hash-material fallback semantics
+    - expanded verification matrix coverage for the new lock clarifications
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing Node/module typings and other pre-existing TypeScript dependency issues unrelated to H0 docs scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to H0 docs scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (76 passed).
+- Review run IDs + triage outcomes:
+  - `r_20260308202215129_b071d13a` (`generic-gemini`): `accept` startup filter-restore contract lock and strict `updatedAt` format lock; `defer` whitespace-driven hash churn UX expectations and concurrent/debounce loss caveats to implementation/hardening phases; `reject` none.
+  - `r_20260308202254539_3d17ffc6` (`generic-pi`): `accept` keybinding finalization wording (`r`), semantic-emission-order definition, toggle-under-filter cursor rule, repo-path canonicalization wording, add-path hash clarification, and non-UTF-8 hash-material fallback semantics; `defer` `.gitignore` guidance final wording to H3 docs pass; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline with `m` cell and cell-order contract).
