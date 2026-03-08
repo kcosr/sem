@@ -275,6 +275,39 @@ Example template:
 - Notes:
   - During execution, `cargo fmt --all` initially touched unrelated files; those out-of-scope changes were restored before final H2 commit to preserve strict phase boundaries.
 
+### H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `923fd28`
+- Acceptance evidence:
+  - `npm run lint` => `FAIL` (pre-existing TypeScript workspace/type dependency failures; unchanged by Rust-only H3 scope)
+  - `npm test` => `FAIL` (`vitest` missing in environment; unchanged by Rust-only H3 scope)
+  - `cargo test -p sem-cli` => `PASS` (26 passed, 0 failed), including hardening additions:
+    - formatter contract tests (`json` + terminal range label assertions)
+    - additional TUI render/state tests (`help` overlay render path, missing-content resilience path)
+  - `cargo test -p sem-core` => `PASS` (35 passed, 0 failed) regression check
+  - manual/release-readiness:
+    - `cargo run -p sem-cli -- diff --format json` => validated JSON output includes optional contract fields during real git-mode diff
+    - synthetic large-diff smoke (`1500` entities, `5` semantic changes) => completed in `276ms`
+    - `cargo tree -p sem-cli | rg \"ratatui|crossterm|similar\"` => dependency graph evidence captured for audit
+  - docs/finalization closure:
+    - updated `README.md`, `crates/README.md`
+    - added `docs/reference/architecture.md`
+    - added `docs/implementation/implementation-plan.md` milestone status
+    - added root `CHANGELOG.md` entry
+    - added topic dependency audit notes
+- Review run IDs + triage outcomes:
+  - `r_20260308065600430_7d0fd344` (generic-gemini):
+    - `accept`: add missing H3 evidence closure, tighten hardening coverage (render/help + resilience tests), and ensure release docs/finalization artifacts are present.
+    - `defer`: full renderer snapshot matrix breadth beyond current constrained-width render checks (tracked as residual hardening follow-up).
+    - `reject`: none.
+  - `r_20260308065737515_dd440b59` (generic-pi):
+    - `accept`: avoid silent JSON serialization fallback (`expect` instead of default), expand test coverage for missing-content and overlay render paths, enrich dependency audit notes (license/MSRV/footprint).
+    - `defer`: dedicated non-UTF8/binary integration scenario in full end-to-end TUI session (current placeholder-path resilience is unit-tested; broader binary ingestion path remains follow-up).
+    - `reject`: workspace-wide `cargo fmt --check`/`cargo clippy` warning observations as pre-existing non-H3 gating conditions outside this topic’s scoped files.
+- Go/No-Go: GO
+- Notes:
+  - H3 closure criteria satisfied for this topic: hardening + docs + finalization artifacts committed, reviews triaged, and Section 9 evidence completed.
+
 ## 10. Execution Start Point
 Execution stream must start at `H0` only.
 
