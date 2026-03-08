@@ -296,6 +296,33 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.8 H3 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `69a0c75`
+- Acceptance evidence:
+  - manual: verified H3 hardening + docs deliverables landed:
+    - hardening carryover tests added for identity/hash match and hash mismatch across snapshot reloads
+    - additional carryover hardening added for `ChangeType::Added` (with `index` target endpoint) and `ChangeType::Deleted` (before-content hash path)
+    - fallback identity ordinal distinction test added for duplicate `(path,type,name)` entities with empty `entity_id`
+    - user docs updated in `README.md` and `crates/README.md` for `Space`/`r` keys and local review-state persistence path guidance
+    - changelog milestone entry added in `CHANGELOG.md` for review-state UX, persistence, and test coverage
+  - `cargo fmt -p sem-cli` (run in `crates/`) => PASS.
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (104 passed), including H3-focused hardening coverage:
+    - `tui::app::tests::{reviewed_state_carries_across_snapshot_when_identity_and_hash_match, reviewed_state_does_not_carry_when_target_hash_changes, added_entity_carries_review_state_with_index_endpoint_target, deleted_entity_carries_review_state_when_before_content_matches, fallback_identity_ordinals_keep_duplicate_entities_distinct}`
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+  - `TIMEFORMAT='real=%3R'; time cargo test -p sem-cli tui::review_state::tests::compaction_dedupes_and_caps_record_count -- --exact` (run in `crates/`) => PASS (`real=0.628`, `1 passed`) as scale-smoke timing evidence over `MAX_REVIEW_RECORDS` compaction workload.
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (pre-existing missing Node/module typings and dependency issues unrelated to Rust H3 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H3 scope).
+- Review run IDs + triage outcomes:
+  - `r_20260308205236555_7a5692e8` (`generic-gemini`): `accept` H3 closure requirement to add Section `9.8` evidence and complete hardening/docs/changelog closure; `defer` debounce exit-flush timing integration coverage to future infrastructure-focused hardening; `reject` none.
+  - `r_20260308205445707_9d22b6ad` (`generic-pi`): `accept` additional hardening coverage for added/deleted carryover, `index` endpoint carryover path, and fallback-ordinal distinction tests (applied in H3); `defer` explicit timer-mocked debounce/flush integration harness and non-UTF8-path API-boundary annotation to future hardening pass; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+  - `docs/implementation/implementation-plan.md` is absent/retired in this repository; equivalent milestone status is recorded here in Section 9.8.
+  - `docs/reference/architecture.md` is absent/retired in this repository; cross-cutting architecture status is captured in this topic plan evidence plus README/changelog updates.
+  - proposal/doc statuses remain `Locked` for `schema-proposal.md`, `design.md`, and this `phase-task-plan.md` at H3 close.
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline with `m` cell and cell-order contract).
