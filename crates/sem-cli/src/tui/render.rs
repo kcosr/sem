@@ -265,8 +265,7 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Enter open, [/] step, m mode, g/G jump, ? help, q/Ctrl+c quit"
-            .to_string();
+        "Controls: ↑/↓ j/k move, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -280,7 +279,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, [/] step, m mode, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -363,8 +362,8 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &FooterParts) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(controls_width as u16),
-            Constraint::Length(cell_width as u16),
             Constraint::Length(status_width as u16),
+            Constraint::Length(cell_width as u16),
         ])
         .split(area);
 
@@ -374,19 +373,19 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &FooterParts) {
             footer_chunks[0],
         );
     }
-    if cell_width > 0 {
-        frame.render_widget(
-            Paragraph::new(fit_cell_right(&cell_text, cell_width)),
-            footer_chunks[1],
-        );
-    }
     if status_width > 0 {
         if let Some(text) = status_text {
             frame.render_widget(
-                Paragraph::new(fit_cell_right(&format!(" {text}"), status_width)),
-                footer_chunks[2],
+                Paragraph::new(fit_cell_right(&format!("{text} "), status_width)),
+                footer_chunks[1],
             );
         }
+    }
+    if cell_width > 0 {
+        frame.render_widget(
+            Paragraph::new(fit_cell_right(&cell_text, cell_width)),
+            footer_chunks[2],
+        );
     }
 }
 

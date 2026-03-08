@@ -137,8 +137,9 @@ impl AppState {
         self.step_mode = mode;
         self.cumulative_base_endpoint_id = match mode {
             StepMode::Pairwise => None,
-            StepMode::Cumulative => base_endpoint_id
-                .or_else(|| self.commit_cursor.as_ref().map(|c| c.endpoint_id.clone())),
+            StepMode::Cumulative => {
+                base_endpoint_id.or_else(|| self.default_cumulative_base_endpoint_id())
+            }
         };
         self.recompute_comparison();
     }
@@ -200,9 +201,7 @@ impl AppState {
             StepMode::Cumulative => StepMode::Pairwise,
         };
         self.cumulative_base_endpoint_id = if self.step_mode == StepMode::Cumulative {
-            self.commit_cursor
-                .as_ref()
-                .map(|cursor| cursor.endpoint_id.clone())
+            self.default_cumulative_base_endpoint_id()
         } else {
             None
         };
@@ -554,6 +553,17 @@ impl AppState {
             DiffView::Unified => &detail.unified_hunks,
             DiffView::SideBySide => &detail.side_by_side_hunks,
         }
+    }
+
+    fn default_cumulative_base_endpoint_id(&self) -> Option<String> {
+        self.navigation_endpoints
+            .first()
+            .map(|endpoint| endpoint.endpoint_id.clone())
+            .or_else(|| {
+                self.commit_cursor
+                    .as_ref()
+                    .map(|cursor| cursor.endpoint_id.clone())
+            })
     }
 
     fn recompute_comparison(&mut self) {
@@ -1135,7 +1145,35 @@ mod tests {
         );
         assert_eq!(
             app.cumulative_base_endpoint_id(),
-            Some("commit:bbbbbbb".to_string())
+            Some("commit:aaaaaaa".to_string())
+        );
+    }
+
+    #[test]
+    fn cumulative_mode_without_explicit_base_anchors_to_first_endpoint() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Cumulative,
+            None,
+        );
+
+        assert_eq!(
+            app.cumulative_base_endpoint_id(),
+            Some("commit:aaaaaaa".to_string())
+        );
+        assert_eq!(
+            app.comparison_line(),
+            Some((
+                "base".to_string(),
+                "HEAD~1".to_string(),
+                "cursor".to_string(),
+                "HEAD".to_string()
+            ))
         );
     }
 
