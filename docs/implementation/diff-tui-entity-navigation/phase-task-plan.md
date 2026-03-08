@@ -307,6 +307,31 @@ Example template:
 - Go/No-Go: GO
 - Notes:
   - H3 closure criteria satisfied for this topic: hardening + docs + finalization artifacts committed, reviews triaged, and Section 9 evidence completed.
+  - 2026-03-08 post-H3 maintenance follow-up intentionally retired `docs/reference/architecture.md` and `docs/implementation/implementation-plan.md`; this phase plan remains the canonical implementation record for this topic.
+
+### Post-H3 Follow-Up Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `445e6fc`, `751ef49`, `c2aefb5`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` => `PASS` (35 passed, 0 failed) after follow-up fixes and additional renderer coverage.
+  - `cargo build` => `PASS` (`sem-cli` builds cleanly with follow-up TUI styling/perf changes).
+  - manual: verified first detail-open responsiveness improved via async syntax warmup + visible-window rendering and markdown-path syntax bypass fallback.
+  - docs: removed redundant top-level docs:
+    - `docs/reference/architecture.md`
+    - `docs/implementation/implementation-plan.md`
+    and retained this topic plan as source-of-truth.
+- Review run IDs + triage outcomes:
+  - `r_20260308084239404_b9d13078` (generic-gemini):
+    - `accept`: monitor large-diff performance risks and keep TUI regression coverage active.
+    - `defer`: none.
+    - `reject`: none.
+  - `r_20260308084351608_35d0ea3a` (generic-pi):
+    - `accept`: close test gaps for hunk parsing/unified numbering/highlight overlay behavior; keep perf mitigations in place.
+    - `defer`: broader cache-eviction policy refinement (current clear-on-cap strategy retained for now).
+    - `reject`: restoring detail view-mode label in header (intentionally omitted by product preference).
+- Go/No-Go: GO
+- Notes:
+  - Follow-up scope was limited to post-phase UX/performance hardening and plan/documentation reconciliation; no additional phase expansion.
 
 ## 10. Execution Start Point
 Execution stream must start at `H0` only.
@@ -326,8 +351,7 @@ Execution stream must start at `H0` only.
    - no timeout/reasoning CLI overrides.
    - completion by session stream terminal event (`result.completed|result.failed`).
 5. Completion requirements:
-   - update docs/reference architecture only if behavior is stabilized.
-   - update `docs/implementation/implementation-plan.md` milestone status.
+   - update architecture/implementation overview docs only if they remain part of the active documentation surface.
    - add `CHANGELOG.md` milestone entry.
    - complete Section 9 evidence per phase.
    - publish final phase summary and go/no-go state.

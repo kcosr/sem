@@ -1013,4 +1013,53 @@ mod tests {
             + widths.delta_col;
         assert_eq!(used, content_width);
     }
+
+    #[test]
+    fn parse_hunk_header_starts_extracts_old_and_new_starts() {
+        assert_eq!(
+            parse_hunk_header_starts("@@ -12,3 +40,8 @@"),
+            Some((12, 40))
+        );
+        assert_eq!(parse_hunk_header_starts("@@ -1 +2 @@"), Some((1, 2)));
+        assert_eq!(parse_hunk_header_starts("not a hunk"), None);
+        assert_eq!(parse_hunk_header_starts("@@ -x,3 +2,1 @@"), None);
+    }
+
+    #[test]
+    fn build_unified_render_rows_assigns_expected_line_numbers() {
+        let lines = vec![
+            (LineKind::Header, "@@ -10,2 +20,3 @@".to_string()),
+            (LineKind::Unchanged, "  keep".to_string()),
+            (LineKind::Removed, "- old".to_string()),
+            (LineKind::Added, "+ new".to_string()),
+            (LineKind::Added, "+ extra".to_string()),
+        ];
+        let rows = build_unified_render_rows(&lines);
+
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].old_number, None);
+        assert_eq!(rows[0].new_number, None);
+        assert_eq!(rows[1].old_number, Some(10));
+        assert_eq!(rows[1].new_number, Some(20));
+        assert_eq!(rows[2].old_number, Some(11));
+        assert_eq!(rows[2].new_number, None);
+        assert_eq!(rows[3].old_number, None);
+        assert_eq!(rows[3].new_number, Some(21));
+        assert_eq!(rows[4].old_number, None);
+        assert_eq!(rows[4].new_number, Some(22));
+    }
+
+    #[test]
+    fn apply_kind_overlay_dims_removed_only() {
+        let base = vec![Span::styled(
+            "line".to_string(),
+            Style::default().fg(Color::Red),
+        )];
+
+        let removed = apply_kind_overlay(base.clone(), LineKind::Removed);
+        assert!(removed[0].style.add_modifier.contains(Modifier::DIM));
+
+        let unchanged = apply_kind_overlay(base, LineKind::Unchanged);
+        assert!(!unchanged[0].style.add_modifier.contains(Modifier::DIM));
+    }
 }
