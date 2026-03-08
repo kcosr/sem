@@ -2,6 +2,28 @@ use sem_core::model::change::SemanticChange;
 use similar::{ChangeTag, TextDiff};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityContextMode {
+    Hunk,
+    Entity,
+}
+
+impl EntityContextMode {
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::Hunk => "hunk",
+            Self::Entity => "entity",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Hunk => Self::Entity,
+            Self::Entity => Self::Hunk,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineKind {
     Header,
     Added,
@@ -44,7 +66,7 @@ impl RenderedDiff {
     }
 }
 
-pub fn render_change(change: &SemanticChange) -> RenderedDiff {
+pub fn render_change(change: &SemanticChange, _context_mode: EntityContextMode) -> RenderedDiff {
     let before = change.before_content.as_deref().unwrap_or("");
     let after = change.after_content.as_deref().unwrap_or("");
 
@@ -210,7 +232,7 @@ mod tests {
     fn render_change_detects_multiple_hunks() {
         let before = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n";
         let after = "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
-        let rendered = render_change(&change(Some(before), Some(after)));
+        let rendered = render_change(&change(Some(before), Some(after)), EntityContextMode::Hunk);
         assert!(rendered.unified_hunks.len() >= 2);
         assert!(rendered.side_by_side_hunks.len() >= 2);
         let modified_lines: Vec<usize> = rendered
@@ -225,7 +247,7 @@ mod tests {
 
     #[test]
     fn render_change_handles_added_content() {
-        let rendered = render_change(&change(None, Some("new line\n")));
+        let rendered = render_change(&change(None, Some("new line\n")), EntityContextMode::Hunk);
         assert!(rendered
             .unified_lines
             .iter()
@@ -238,7 +260,7 @@ mod tests {
 
     #[test]
     fn render_change_handles_deleted_content() {
-        let rendered = render_change(&change(Some("old line\n"), None));
+        let rendered = render_change(&change(Some("old line\n"), None), EntityContextMode::Hunk);
         assert!(rendered
             .unified_lines
             .iter()
@@ -251,7 +273,7 @@ mod tests {
 
     #[test]
     fn render_change_handles_missing_content_without_panicking() {
-        let rendered = render_change(&change(None, None));
+        let rendered = render_change(&change(None, None), EntityContextMode::Hunk);
         assert_eq!(rendered.unified_hunks, vec![0]);
         assert_eq!(rendered.side_by_side_hunks, vec![0]);
         assert_eq!(rendered.unified_lines[0].1, "content unavailable");

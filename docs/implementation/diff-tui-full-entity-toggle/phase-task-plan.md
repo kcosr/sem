@@ -226,6 +226,26 @@ Gate:
 - Notes:
   - both reviews completed with stream terminal events (`result.completed`).
 
+### 9.5 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): PENDING (to be recorded after H1 milestone commit)
+- Acceptance evidence:
+  - `cargo test -p sem-cli` (run from `crates/`) => pass (`110 passed`, `0 failed`).
+  - manual: verified startup defaults to `hunk`, `e` toggles in list/detail, and detail-mode toggles reset `detail_hunk_index` + `detail_scroll` to `0`.
+  - tests added in `tui/app.rs` for list/detail toggle behavior, detail round-trip reset, non-first-entity stability, and unavailable-content toggle safety.
+- Review run IDs + triage outcomes:
+  - `r_20260308210942672_b3c50e2d`:
+    - `accept`: none in-scope beyond H1 wiring/tests already delivered.
+    - `defer`: full-entity rendering path and changed-region anchors (H2 scope).
+    - `reject`: none.
+  - `r_20260308211110786_7c529e84`:
+    - `accept`: added detail-mode round-trip reset, non-first-entity stability, and unavailable-content toggle tests.
+    - `defer`: dead-code warning on `EntityContextMode::as_token` until footer integration in H3.
+    - `reject`: none.
+- Go/No-Go: GO
+- Notes:
+  - both reviews completed with stream terminal events (`result.completed`).
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline and ordering contract).

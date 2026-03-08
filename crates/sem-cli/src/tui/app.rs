@@ -13,7 +13,7 @@ use crate::commands::diff::{
     StepComparison, StepEndpoint, StepMode, TuiSourceMode,
 };
 
-use super::detail::{render_change, LineKind, RenderedDiff, SideBySideLine};
+use super::detail::{render_change, EntityContextMode, LineKind, RenderedDiff, SideBySideLine};
 
 const MIN_SIDE_BY_SIDE_WIDTH: u16 = 120;
 
@@ -40,6 +40,7 @@ pub struct AppState {
     selected: usize,
     mode: Mode,
     requested_view: DiffView,
+    entity_context_mode: EntityContextMode,
     detail_scroll: usize,
     detail_hunk_index: usize,
     detail: Option<RenderedDiff>,
@@ -80,6 +81,7 @@ impl AppState {
             selected: 0,
             mode: Mode::List,
             requested_view: initial_view,
+            entity_context_mode: EntityContextMode::Hunk,
             detail_scroll: 0,
             detail_hunk_index: 0,
             detail: None,
@@ -407,6 +409,10 @@ impl AppState {
         }
     }
 
+    pub fn entity_context_mode(&self) -> EntityContextMode {
+        self.entity_context_mode
+    }
+
     pub fn fallback_active(&self) -> bool {
         self.requested_view == DiffView::SideBySide && self.effective_view() == DiffView::Unified
     }
@@ -483,6 +489,7 @@ impl AppState {
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
+            KeyCode::Char('e') => self.toggle_entity_context_mode(),
             KeyCode::Char(' ') => {
                 let _ = self.toggle_selected_reviewed();
             }
@@ -508,6 +515,7 @@ impl AppState {
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
+            KeyCode::Char('e') => self.toggle_entity_context_mode(),
             KeyCode::Char(' ') => {
                 let _ = self.toggle_selected_reviewed();
             }
@@ -586,7 +594,7 @@ impl AppState {
 
     fn refresh_detail(&mut self) {
         if let Some(row) = self.selected_row() {
-            self.detail = Some(render_change(&row.change));
+            self.detail = Some(render_change(&row.change, self.entity_context_mode));
         } else {
             self.detail = None;
         }
@@ -611,6 +619,16 @@ impl AppState {
 
         self.detail_hunk_index = 0;
         self.jump_to_hunk();
+    }
+
+    fn toggle_entity_context_mode(&mut self) {
+        self.entity_context_mode = self.entity_context_mode.toggled();
+
+        if self.mode == Mode::Detail {
+            self.detail_hunk_index = 0;
+            self.detail_scroll = 0;
+            self.refresh_detail();
+        }
     }
 
     fn next_hunk(&mut self) {
@@ -1048,6 +1066,113 @@ mod tests {
         app.set_viewport(160, 30);
         assert_eq!(app.effective_view(), DiffView::SideBySide);
         assert!(!app.fallback_active());
+    }
+
+    #[test]
+    fn startup_entity_context_mode_defaults_to_hunk() {
+        let app = app();
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+    }
+
+    #[test]
+    fn e_key_toggles_entity_context_mode_in_list_mode() {
+        let mut app = app();
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.mode(), Mode::List);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+        assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn e_key_toggles_entity_context_mode_in_detail_and_resets_position() {
+        let mut app = app();
+        app.set_viewport(120, 12);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(app.detail_scroll() > 0);
+        assert!(app.detail_hunk_index() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+        assert_eq!(app.mode(), Mode::Detail);
+    }
+
+    #[test]
+    fn e_key_toggle_round_trip_in_detail_resets_position_each_time() {
+        let mut app = app();
+        app.set_viewport(120, 12);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(app.detail_hunk_index() > 0);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(app.detail_hunk_index() > 0);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn e_key_toggle_in_detail_preserves_current_entity_selection() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("beta"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.detail_title().contains("beta"));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+    }
+
+    #[test]
+    fn e_key_toggle_handles_unavailable_detail_content() {
+        let mut app = AppState::from_diff_result(
+            &DiffResult {
+                changes: vec![change_with_identity(
+                    "missing.ts",
+                    "missing",
+                    "missing.ts::missing",
+                    ChangeType::Modified,
+                    None,
+                    None,
+                )],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            DiffView::Unified,
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+        assert_eq!(app.mode(), Mode::Detail);
     }
 
     #[test]
