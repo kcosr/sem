@@ -65,6 +65,14 @@ enum Commands {
         #[arg(long, value_enum, requires = "tui")]
         step_mode: Option<StepMode>,
 
+        /// Enable local HTTP state endpoint for TUI session
+        #[arg(long, requires = "tui")]
+        tui_http: bool,
+
+        /// Local HTTP port for TUI state endpoint (default: 7778)
+        #[arg(long, requires = "tui_http")]
+        tui_http_port: Option<u16>,
+
         /// Show internal timing profile
         #[arg(long, hide = true)]
         profile: bool,
@@ -136,6 +144,8 @@ fn main() {
             tui,
             diff_view,
             step_mode,
+            tui_http,
+            tui_http_port,
             profile,
             file_exts,
         }) => {
@@ -161,6 +171,8 @@ fn main() {
                 file_exts,
                 files,
                 step_mode,
+                tui_http,
+                tui_http_port: tui_http_port.unwrap_or(7778),
             });
         }
         Some(Commands::Blame { file, json }) => {
@@ -231,6 +243,8 @@ fn main() {
                 file_exts: vec![],
                 files: vec![],
                 step_mode: None,
+                tui_http: false,
+                tui_http_port: 7778,
             });
         }
     }
@@ -298,5 +312,57 @@ mod tests {
         assert!(parsed.is_err());
         let error = parsed.expect_err("must error").to_string();
         assert!(error.contains("--tui"));
+    }
+
+    #[test]
+    fn diff_accepts_tui_http_with_default_port() {
+        let parsed =
+            Cli::try_parse_from(["sem", "diff", "--tui", "--tui-http"]).expect("must parse");
+        match parsed.command {
+            Some(Commands::Diff {
+                tui_http,
+                tui_http_port,
+                ..
+            }) => {
+                assert!(tui_http);
+                assert_eq!(tui_http_port, None);
+            }
+            _ => panic!("expected diff command"),
+        }
+    }
+
+    #[test]
+    fn diff_accepts_tui_http_port_override() {
+        let parsed = Cli::try_parse_from([
+            "sem",
+            "diff",
+            "--tui",
+            "--tui-http",
+            "--tui-http-port",
+            "8899",
+        ])
+        .expect("must parse");
+        match parsed.command {
+            Some(Commands::Diff { tui_http_port, .. }) => {
+                assert_eq!(tui_http_port, Some(8899));
+            }
+            _ => panic!("expected diff command"),
+        }
+    }
+
+    #[test]
+    fn diff_rejects_tui_http_without_tui() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui-http"]);
+        assert!(parsed.is_err());
+        let error = parsed.expect_err("must error").to_string();
+        assert!(error.contains("--tui"));
+    }
+
+    #[test]
+    fn diff_rejects_tui_http_port_without_tui_http() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui", "--tui-http-port", "8899"]);
+        assert!(parsed.is_err());
+        let error = parsed.expect_err("must error").to_string();
+        assert!(error.contains("--tui-http"));
     }
 }
