@@ -228,6 +228,22 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.5 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `1a66160`
+- Acceptance evidence:
+  - manual: verified H1 deliverables landed in `crates/sem-cli/src/commands/diff.rs` (endpoint/cursor foundation + unified loader paths) with compatibility wiring in `tui/mod.rs`, `tui/app.rs`, and `tui/render.rs`.
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (missing node/module type dependencies in current environment; unrelated to Rust H1 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` not available in current environment; unrelated to Rust H1 scope).
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (53 passed).
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+- Review run IDs + triage outcomes:
+  - `r_20260308183720710_c21f9224` (`generic-gemini`): `accept` endpoint/cursor foundation quality and additional H1 safety tests (self-comparison + mismatch paths); `defer` synthetic endpoint inclusion in active path and non-UTF8/perf hardening items to H2/H3; `reject` none.
+  - `r_20260308183813525_c3e3c1fb` (`generic-pi`): `accept` cleanup of typed loader usage (removed endpoint-id roundtrip parsing) and extra H1 guard tests; `defer` naming consolidation (`Commit*` alias surface) and full mode/base/comparison contract fields to H2; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-unified-stepping/schema-proposal.md`
