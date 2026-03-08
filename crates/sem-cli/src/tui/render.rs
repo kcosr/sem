@@ -1,8 +1,11 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use sem_core::model::change::ChangeType;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -576,6 +579,28 @@ fn render_side_column(
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static SYNTAX_THEME: OnceLock<Theme> = OnceLock::new();
+static HIGHLIGHT_CACHE: OnceLock<Mutex<HashMap<HighlightCacheKey, Vec<Span<'static>>>>> =
+    OnceLock::new();
+const HIGHLIGHT_CACHE_LIMIT: usize = 4096;
+
+#[derive(Clone, Eq)]
+struct HighlightCacheKey {
+    extension: Option<String>,
+    text: String,
+}
+
+impl PartialEq for HighlightCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.extension == other.extension && self.text == other.text
+    }
+}
+
+impl Hash for HighlightCacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.extension.hash(state);
+        self.text.hash(state);
+    }
+}
 
 fn syntax_set() -> &'static SyntaxSet {
     SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
@@ -593,14 +618,33 @@ fn syntax_theme() -> &'static Theme {
     })
 }
 
-fn syntax_for_path<'a>(set: &'a SyntaxSet, file_path: Option<&str>) -> &'a SyntaxReference {
-    if let Some(path) = file_path {
-        if let Some(ext) = Path::new(path).extension().and_then(|value| value.to_str()) {
-            if let Some(syntax) = set.find_syntax_by_extension(ext) {
-                return syntax;
-            }
+fn highlight_cache() -> &'static Mutex<HashMap<HighlightCacheKey, Vec<Span<'static>>>> {
+    HIGHLIGHT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_highlight_cache() -> MutexGuard<'static, HashMap<HighlightCacheKey, Vec<Span<'static>>>> {
+    match highlight_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn syntax_extension(file_path: Option<&str>) -> Option<String> {
+    file_path.and_then(|path| {
+        Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+    })
+}
+
+fn syntax_for_extension<'a>(set: &'a SyntaxSet, extension: Option<&str>) -> &'a SyntaxReference {
+    if let Some(ext) = extension {
+        if let Some(syntax) = set.find_syntax_by_extension(ext) {
+            return syntax;
         }
     }
+
     set.find_syntax_plain_text()
 }
 
@@ -609,25 +653,57 @@ fn highlight_text_spans(
     text: &str,
     kind: LineKind,
 ) -> Option<Vec<Span<'static>>> {
+    if matches!(kind, LineKind::Header | LineKind::Unchanged) {
+        return None;
+    }
+
     if text.is_empty() {
         return Some(vec![Span::raw(String::new())]);
     }
 
+    let extension = syntax_extension(file_path);
+    let cache_key = HighlightCacheKey {
+        extension: extension.clone(),
+        text: text.to_string(),
+    };
+    if let Some(cached) = lock_highlight_cache().get(&cache_key).cloned() {
+        return Some(apply_kind_overlay(cached, kind));
+    }
+
     let set = syntax_set();
-    let syntax = syntax_for_path(set, file_path);
+    let syntax = syntax_for_extension(set, extension.as_deref());
     let mut highlighter = HighlightLines::new(syntax, syntax_theme());
     let highlighted = highlighter.highlight_line(text, set).ok()?;
-    let spans = highlighted
+    let spans: Vec<Span<'static>> = highlighted
         .into_iter()
-        .map(|(style, segment)| {
-            let mut rt_style = syntect_style_to_ratatui(style);
-            if kind == LineKind::Removed {
-                rt_style = rt_style.add_modifier(Modifier::DIM);
-            }
-            Span::styled(segment.to_string(), rt_style)
-        })
+        .map(|(style, segment)| Span::styled(segment.to_string(), syntect_style_to_ratatui(style)))
         .collect();
-    Some(spans)
+
+    {
+        let mut cache = lock_highlight_cache();
+        if cache.len() >= HIGHLIGHT_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(cache_key, spans.clone());
+    }
+
+    Some(apply_kind_overlay(spans, kind))
+}
+
+fn apply_kind_overlay(spans: Vec<Span<'static>>, kind: LineKind) -> Vec<Span<'static>> {
+    if kind != LineKind::Removed {
+        return spans;
+    }
+
+    spans
+        .into_iter()
+        .map(|span| {
+            Span::styled(
+                span.content.into_owned(),
+                span.style.add_modifier(Modifier::DIM),
+            )
+        })
+        .collect()
 }
 
 fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
