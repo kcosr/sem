@@ -4,6 +4,7 @@ use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 
+use super::http_state::{GraphImpactSnapshot, GraphUnavailableReason, IMPACT_RESPONSE_CAP_DEFAULT};
 use super::review_state::{
     build_logical_entity_key, build_target_content_hash, current_updated_at,
     endpoint_supports_review_hash, ReviewFilter, ReviewIdentity, ReviewStateData,
@@ -43,6 +44,8 @@ pub struct AppState {
     entity_context_mode: EntityContextMode,
     detail_scroll: usize,
     detail_hunk_index: usize,
+    graph_snapshot: GraphImpactSnapshot,
+    impact_panel_expanded: bool,
     detail: Option<RenderedDiff>,
     show_help: bool,
     should_quit: bool,
@@ -84,6 +87,11 @@ impl AppState {
             entity_context_mode: EntityContextMode::Hunk,
             detail_scroll: 0,
             detail_hunk_index: 0,
+            graph_snapshot: GraphImpactSnapshot::unavailable(
+                GraphUnavailableReason::SelectionNotResolvable,
+                IMPACT_RESPONSE_CAP_DEFAULT,
+            ),
+            impact_panel_expanded: false,
             detail: None,
             show_help: false,
             should_quit: false,
@@ -473,6 +481,18 @@ impl AppState {
         }
     }
 
+    pub fn graph_snapshot(&self) -> &GraphImpactSnapshot {
+        &self.graph_snapshot
+    }
+
+    pub fn set_graph_snapshot(&mut self, snapshot: GraphImpactSnapshot) {
+        self.graph_snapshot = snapshot;
+    }
+
+    pub fn impact_panel_expanded(&self) -> bool {
+        self.impact_panel_expanded
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
@@ -536,6 +556,7 @@ impl AppState {
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
             KeyCode::Tab => self.toggle_view(),
+            KeyCode::Char('i') => self.toggle_impact_panel(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
             KeyCode::PageDown => self.scroll_page_down(),
@@ -620,7 +641,12 @@ impl AppState {
         self.mode = Mode::List;
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
+        self.impact_panel_expanded = false;
         self.detail = None;
+    }
+
+    fn toggle_impact_panel(&mut self) {
+        self.impact_panel_expanded = !self.impact_panel_expanded;
     }
 
     fn toggle_view(&mut self) {
@@ -1069,6 +1095,52 @@ mod tests {
         assert_eq!(app.mode(), Mode::Detail);
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn i_key_is_noop_in_list_mode() {
+        let mut app = app();
+        assert!(!app.impact_panel_expanded());
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(!app.impact_panel_expanded());
+    }
+
+    #[test]
+    fn i_key_toggles_panel_in_detail_mode_and_resets_on_exit() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.impact_panel_expanded());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(app.impact_panel_expanded());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(!app.impact_panel_expanded());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(app.impact_panel_expanded());
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+        assert!(!app.impact_panel_expanded());
+    }
+
+    #[test]
+    fn expanded_panel_persists_while_navigating_in_detail_mode() {
+        let mut app = app();
+        app.set_viewport(120, 12);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(app.impact_panel_expanded());
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.impact_panel_expanded());
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.impact_panel_expanded());
+
+        let before_hunk = app.detail_hunk_index();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.detail_hunk_index() >= before_hunk);
+        assert!(app.impact_panel_expanded());
     }
 
     #[test]

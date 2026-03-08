@@ -1064,6 +1064,37 @@ mod tests {
     }
 
     #[test]
+    fn build_state_snapshot_reflects_panel_expanded_flag() {
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let expanded_snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            true,
+        );
+        let collapsed_snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
+
+        assert!(expanded_snapshot.panel.expanded);
+        assert!(!collapsed_snapshot.panel.expanded);
+        assert_eq!(
+            expanded_snapshot.panel.summary,
+            "deps:0 depBy:0 impact:0".to_string()
+        );
+        assert_eq!(
+            expanded_snapshot.panel.summary,
+            collapsed_snapshot.panel.summary
+        );
+    }
+
+    #[test]
     fn http_server_returns_state_snapshot_for_get_state() {
         let graph_snapshot = GraphImpactSnapshot::unavailable(
             GraphUnavailableReason::SelectionNotResolvable,

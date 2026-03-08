@@ -108,7 +108,7 @@ pub fn run_tui(
         started_at: started_at.clone(),
     };
     let initial_snapshot =
-        build_snapshot(&app_state, &graph_snapshot_service, &initial_session, false);
+        snapshot_for_http_state(&mut app_state, &graph_snapshot_service, &initial_session);
     let shared_http_state = shared_state(initial_snapshot);
     let mut http_server = HttpStateServer::start(
         runtime_options.http_enabled,
@@ -130,9 +130,11 @@ pub fn run_tui(
             )));
         }
     }
-    replace_shared_snapshot(
+    sync_http_state(
+        &mut app_state,
+        &graph_snapshot_service,
+        &session,
         &shared_http_state,
-        build_snapshot(&app_state, &graph_snapshot_service, &session, false),
     );
     let review_cwd = context.cwd.clone();
     let mut reload_coordinator = ReloadCoordinator::new(context);
@@ -240,9 +242,11 @@ pub fn run_tui(
             }
         }
 
-        replace_shared_snapshot(
+        sync_http_state(
+            &mut app_state,
+            &graph_snapshot_service,
+            &session,
             &shared_http_state,
-            build_snapshot(&app_state, &graph_snapshot_service, &session, false),
         );
     }
 
@@ -263,15 +267,30 @@ pub fn run_tui(
     Ok(())
 }
 
-fn build_snapshot(
-    app_state: &app::AppState,
+fn snapshot_for_http_state(
+    app_state: &mut app::AppState,
     graph_snapshot_service: &GraphSnapshotService,
     session: &SnapshotSessionInput,
-    panel_expanded: bool,
 ) -> http_state::HttpStateSnapshot {
     let (selection, graph_selection) = snapshot_inputs_from_app_state(app_state);
     let graph_impact = graph_snapshot_service.snapshot_for_selection(graph_selection.as_ref());
-    build_state_snapshot(session, selection, &graph_impact, panel_expanded)
+    app_state.set_graph_snapshot(graph_impact.clone());
+    build_state_snapshot(
+        session,
+        selection,
+        &graph_impact,
+        app_state.impact_panel_expanded(),
+    )
+}
+
+fn sync_http_state(
+    app_state: &mut app::AppState,
+    graph_snapshot_service: &GraphSnapshotService,
+    session: &SnapshotSessionInput,
+    shared_http_state: &http_state::SharedHttpState,
+) {
+    let snapshot = snapshot_for_http_state(app_state, graph_snapshot_service, session);
+    replace_shared_snapshot(shared_http_state, snapshot);
 }
 
 fn snapshot_inputs_from_app_state(
@@ -459,11 +478,15 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReloadCoordinator, WorkerRequest};
+    use super::http_state::{GraphSnapshotService, HttpSourceMode, SnapshotSessionInput};
+    use super::{snapshot_for_http_state, ReloadCoordinator, WorkerRequest};
     use crate::commands::diff::{
-        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest, StepMode,
-        TuiSourceMode,
+        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest, DiffView,
+        StepMode, TuiSourceMode,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use sem_core::model::change::{ChangeType, SemanticChange};
+    use sem_core::parser::differ::DiffResult;
     use std::collections::HashMap;
     use std::thread;
     use std::time::Duration;
@@ -546,6 +569,36 @@ mod tests {
         assert_eq!(second.status, CommitLoadStatus::UnsupportedMode);
     }
 
+    #[test]
+    fn snapshot_tracks_panel_expanded_across_list_detail_transitions() {
+        let mut app = super::app::AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let graph_service =
+            GraphSnapshotService::with_caps(".", &[], HttpSourceMode::Stdin, 10_000);
+        let session = SnapshotSessionInput {
+            http_enabled: true,
+            http_bound: true,
+            host: "127.0.0.1".to_string(),
+            port: 7778,
+            source_mode: HttpSourceMode::Stdin,
+            started_at: "2026-03-08T21:00:00Z".to_string(),
+        };
+
+        let list_snapshot = snapshot_for_http_state(&mut app, &graph_service, &session);
+        assert_eq!(list_snapshot.selection.ui.mode, "list");
+        assert!(!list_snapshot.panel.expanded);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        let detail_snapshot = snapshot_for_http_state(&mut app, &graph_service, &session);
+        assert_eq!(detail_snapshot.selection.ui.mode, "detail");
+        assert!(detail_snapshot.panel.expanded);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let list_after_close = snapshot_for_http_state(&mut app, &graph_service, &session);
+        assert_eq!(list_after_close.selection.ui.mode, "list");
+        assert!(!list_after_close.panel.expanded);
+    }
+
     fn wait_for_response(
         coordinator: &mut ReloadCoordinator,
     ) -> crate::commands::diff::CommitStepResponse {
@@ -557,5 +610,35 @@ mod tests {
         }
 
         panic!("timed out waiting for coordinator response");
+    }
+
+    fn sample_result() -> DiffResult {
+        DiffResult {
+            changes: vec![SemanticChange {
+                id: "change::x".to_string(),
+                entity_id: "src/x.rs::function::x".to_string(),
+                change_type: ChangeType::Modified,
+                entity_type: "function".to_string(),
+                entity_name: "x".to_string(),
+                file_path: "src/x.rs".to_string(),
+                old_file_path: None,
+                before_content: Some("line1\nline2\nline3\n".to_string()),
+                after_content: Some("line1\nline2 changed\nline3\n".to_string()),
+                commit_sha: None,
+                author: None,
+                timestamp: None,
+                structural_change: Some(true),
+                before_start_line: Some(1),
+                before_end_line: Some(3),
+                after_start_line: Some(1),
+                after_end_line: Some(3),
+            }],
+            file_count: 1,
+            added_count: 0,
+            modified_count: 1,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        }
     }
 }
