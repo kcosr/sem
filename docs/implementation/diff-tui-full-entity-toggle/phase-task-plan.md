@@ -269,7 +269,7 @@ Gate:
 
 ### 9.7 H3 Evidence
 - Completion date: 2026-03-08
-- Commit hash(es): PENDING (to be recorded after H3 milestone commit)
+- Commit hash(es): `1b755987727d90de86dd9ac0556dd24d256b4ebd`
 - Acceptance evidence:
   - `cargo test -p sem-cli && cargo test -p sem-core` (run from `crates/`) => pass (`121` sem-cli tests, `41` sem-core tests, `0` failures).
   - footer UX: `render.rs` now emits `e: <hunk|entity>` in list/detail footer cells with shared ordering `m | r | e`.
