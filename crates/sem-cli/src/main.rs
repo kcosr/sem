@@ -1,20 +1,27 @@
 mod commands;
 mod formatters;
+mod tui;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use commands::blame::{blame_command, BlameOptions};
-use commands::diff::{diff_command, DiffOptions, OutputFormat};
+use commands::diff::{diff_command, DiffOptions, DiffView, OutputFormat};
 use commands::graph::{graph_command, GraphFormat, GraphOptions};
 use commands::impact::{impact_command, ImpactOptions};
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(name = "sem", version = "0.3.1", about = "Semantic version control")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
-#[derive(Subcommand)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DiffFormatArg {
+    Terminal,
+    Json,
+}
+
+#[derive(Debug, Subcommand)]
 enum Commands {
     /// Show semantic diff of changes
     Diff {
@@ -42,9 +49,17 @@ enum Commands {
         #[arg(long)]
         stdin: bool,
 
-        /// Output format: terminal or json
-        #[arg(long, default_value = "terminal")]
-        format: String,
+        /// Output format: terminal or json (invalid with --tui)
+        #[arg(long, conflicts_with = "tui")]
+        format: Option<DiffFormatArg>,
+
+        /// Launch interactive TUI mode
+        #[arg(long)]
+        tui: bool,
+
+        /// Initial diff view for TUI mode
+        #[arg(long, default_value = "unified", requires = "tui")]
+        diff_view: DiffView,
 
         /// Show internal timing profile
         #[arg(long, hide = true)]
@@ -114,12 +129,14 @@ fn main() {
             to,
             stdin,
             format,
+            tui,
+            diff_view,
             profile,
             file_exts,
         }) => {
-            let output_format = match format.as_str() {
-                "json" => OutputFormat::Json,
-                _ => OutputFormat::Terminal,
+            let output_format = match format.unwrap_or(DiffFormatArg::Terminal) {
+                DiffFormatArg::Json => OutputFormat::Json,
+                DiffFormatArg::Terminal => OutputFormat::Terminal,
             };
 
             diff_command(DiffOptions {
@@ -128,6 +145,8 @@ fn main() {
                     .to_string_lossy()
                     .to_string(),
                 format: output_format,
+                tui,
+                diff_view,
                 staged,
                 commit,
                 from,
@@ -195,6 +214,8 @@ fn main() {
                     .to_string_lossy()
                     .to_string(),
                 format: OutputFormat::Terminal,
+                tui: false,
+                diff_view: DiffView::Unified,
                 staged: false,
                 commit: None,
                 from: None,
@@ -204,6 +225,51 @@ fn main() {
                 file_exts: vec![],
                 files: vec![],
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn diff_rejects_tui_with_format() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui", "--format", "json"]);
+        assert!(parsed.is_err());
+        let error = parsed.expect_err("must error").to_string();
+        assert!(error.contains("--format"));
+        assert!(error.contains("--tui"));
+    }
+
+    #[test]
+    fn diff_accepts_tui_with_side_by_side_view() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui", "--diff-view", "side-by-side"])
+            .expect("must parse");
+        match parsed.command {
+            Some(Commands::Diff {
+                tui,
+                diff_view,
+                format,
+                ..
+            }) => {
+                assert!(tui);
+                assert_eq!(diff_view, DiffView::SideBySide);
+                assert_eq!(format, None);
+            }
+            _ => panic!("expected diff command"),
+        }
+    }
+
+    #[test]
+    fn diff_tui_defaults_to_unified_view() {
+        let parsed = Cli::try_parse_from(["sem", "diff", "--tui"]).expect("must parse");
+        match parsed.command {
+            Some(Commands::Diff { diff_view, .. }) => {
+                assert_eq!(diff_view, DiffView::Unified);
+            }
+            _ => panic!("expected diff command"),
         }
     }
 }
