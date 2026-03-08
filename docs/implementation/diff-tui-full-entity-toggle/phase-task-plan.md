@@ -248,7 +248,7 @@ Gate:
 
 ### 9.6 H2 Evidence
 - Completion date: 2026-03-08
-- Commit hash(es): PENDING (to be recorded after H2 milestone commit)
+- Commit hash(es): `4b2797585990504cc7329bb612c756d5d44026c2`
 - Acceptance evidence:
   - `cargo test -p sem-cli` (run from `crates/`) => pass (`116 passed`, `0 failed`).
   - renderer: `EntityContextMode::Entity` now uses full-entity line stream with changed-region anchor generation for unified and side-by-side outputs.
