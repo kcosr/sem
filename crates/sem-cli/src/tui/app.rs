@@ -4,6 +4,10 @@ use sem_core::parser::differ::DiffResult;
 
 use crate::commands::diff::DiffView;
 
+use super::detail::{render_change, LineKind, RenderedDiff, SideBySideLine};
+
+const MIN_SIDE_BY_SIDE_WIDTH: u16 = 120;
+
 #[derive(Clone, Debug)]
 pub struct EntityRow {
     pub file_path: String,
@@ -11,14 +15,28 @@ pub struct EntityRow {
     pub entity_name: String,
     pub change_type: String,
     pub range_label: Option<String>,
+    pub change: SemanticChange,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    List,
+    Detail,
 }
 
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
     selected: usize,
+    mode: Mode,
+    requested_view: DiffView,
+    detail_scroll: usize,
+    detail_hunk_index: usize,
+    detail: Option<RenderedDiff>,
+    show_help: bool,
     should_quit: bool,
-    initial_view: DiffView,
+    viewport_width: u16,
+    viewport_height: u16,
 }
 
 impl AppState {
@@ -28,22 +46,35 @@ impl AppState {
         changes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
         let rows = changes
-            .iter()
+            .into_iter()
             .map(|change| EntityRow {
                 file_path: change.file_path.clone(),
                 entity_type: change.entity_type.clone(),
                 entity_name: change.entity_name.clone(),
                 change_type: change.change_type.to_string(),
-                range_label: range_label(change),
+                range_label: range_label(&change),
+                change,
             })
             .collect();
 
         Self {
             rows,
             selected: 0,
+            mode: Mode::List,
+            requested_view: initial_view,
+            detail_scroll: 0,
+            detail_hunk_index: 0,
+            detail: None,
+            show_help: false,
             should_quit: false,
-            initial_view,
+            viewport_width: 120,
+            viewport_height: 40,
         }
+    }
+
+    pub fn set_viewport(&mut self, width: u16, height: u16) {
+        self.viewport_width = width;
+        self.viewport_height = height;
     }
 
     pub fn rows(&self) -> &[EntityRow] {
@@ -54,19 +85,117 @@ impl AppState {
         self.selected
     }
 
-    pub fn initial_view(&self) -> DiffView {
-        self.initial_view
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    pub fn effective_view(&self) -> DiffView {
+        if self.requested_view == DiffView::SideBySide
+            && self.viewport_width < MIN_SIDE_BY_SIDE_WIDTH
+        {
+            DiffView::Unified
+        } else {
+            self.requested_view
+        }
+    }
+
+    pub fn fallback_active(&self) -> bool {
+        self.requested_view == DiffView::SideBySide && self.effective_view() == DiffView::Unified
+    }
+
+    pub fn show_help(&self) -> bool {
+        self.show_help
     }
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
 
+    pub fn detail_scroll(&self) -> usize {
+        self.detail_scroll
+    }
+
+    pub fn detail_title(&self) -> String {
+        let Some(row) = self.rows.get(self.selected) else {
+            return "Detail".to_string();
+        };
+
+        match &row.range_label {
+            Some(range) => format!("{} {} {}", row.file_path, row.entity_name, range),
+            None => format!("{} {}", row.file_path, row.entity_name),
+        }
+    }
+
+    pub fn unified_lines(&self) -> &[(LineKind, String)] {
+        if let Some(detail) = &self.detail {
+            &detail.unified_lines
+        } else {
+            &[]
+        }
+    }
+
+    pub fn side_by_side_lines(&self) -> &[SideBySideLine] {
+        if let Some(detail) = &self.detail {
+            &detail.side_by_side_lines
+        } else {
+            &[]
+        }
+    }
+
+    #[cfg(test)]
+    pub fn detail_hunk_index(&self) -> usize {
+        self.detail_hunk_index
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.show_help {
+            match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
+                KeyCode::Char('q') => self.should_quit = true,
+                _ => {}
+            }
+            return;
+        }
+
+        match self.mode {
+            Mode::List => self.handle_list_key(key),
+            Mode::Detail => self.handle_detail_key(key),
+        }
+    }
+
+    fn handle_list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
+            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('G') => {
+                if !self.rows.is_empty() {
+                    self.selected = self.rows.len() - 1;
+                }
+            }
+            KeyCode::Enter => self.open_detail(),
+            _ => {}
+        }
+    }
+
+    fn handle_detail_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Esc => self.close_detail(),
+            KeyCode::Tab => self.toggle_view(),
+            KeyCode::Char('n') => self.next_hunk(),
+            KeyCode::Char('p') => self.previous_hunk(),
+            KeyCode::PageDown => self.scroll_page_down(),
+            KeyCode::PageUp => self.scroll_page_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_line_down(),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_line_up(),
+            KeyCode::Char('g') => self.detail_scroll = 0,
+            KeyCode::Char('G') => {
+                self.detail_scroll = self.max_scroll();
+            }
             _ => {}
         }
     }
@@ -90,6 +219,109 @@ impl AppState {
 
         self.selected = (self.selected + 1) % self.rows.len();
     }
+
+    fn open_detail(&mut self) {
+        if let Some(row) = self.rows.get(self.selected) {
+            self.detail = Some(render_change(&row.change));
+            self.mode = Mode::Detail;
+            self.detail_scroll = 0;
+            self.detail_hunk_index = 0;
+            self.jump_to_hunk();
+        }
+    }
+
+    fn close_detail(&mut self) {
+        self.mode = Mode::List;
+        self.detail_scroll = 0;
+        self.detail_hunk_index = 0;
+        self.detail = None;
+    }
+
+    fn toggle_view(&mut self) {
+        self.requested_view = match self.requested_view {
+            DiffView::Unified => DiffView::SideBySide,
+            DiffView::SideBySide => DiffView::Unified,
+        };
+
+        self.detail_hunk_index = 0;
+        self.jump_to_hunk();
+    }
+
+    fn next_hunk(&mut self) {
+        let hunk_count = self.hunk_positions().len();
+        if hunk_count == 0 {
+            return;
+        }
+
+        if self.detail_hunk_index + 1 < hunk_count {
+            self.detail_hunk_index += 1;
+            self.jump_to_hunk();
+        }
+    }
+
+    fn previous_hunk(&mut self) {
+        if self.hunk_positions().is_empty() {
+            return;
+        }
+
+        if self.detail_hunk_index > 0 {
+            self.detail_hunk_index -= 1;
+            self.jump_to_hunk();
+        }
+    }
+
+    fn jump_to_hunk(&mut self) {
+        let Some(line) = self.hunk_positions().get(self.detail_hunk_index).copied() else {
+            self.detail_scroll = 0;
+            return;
+        };
+
+        self.detail_scroll = line;
+    }
+
+    fn scroll_page_down(&mut self) {
+        let page_size = self.page_size();
+        self.detail_scroll = (self.detail_scroll + page_size).min(self.max_scroll());
+    }
+
+    fn scroll_page_up(&mut self) {
+        let page_size = self.page_size();
+        self.detail_scroll = self.detail_scroll.saturating_sub(page_size);
+    }
+
+    fn scroll_line_down(&mut self) {
+        self.detail_scroll = (self.detail_scroll + 1).min(self.max_scroll());
+    }
+
+    fn scroll_line_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+    }
+
+    fn page_size(&self) -> usize {
+        self.viewport_height.saturating_sub(8) as usize
+    }
+
+    fn max_scroll(&self) -> usize {
+        self.detail_line_count().saturating_sub(1)
+    }
+
+    fn detail_line_count(&self) -> usize {
+        match self.effective_view() {
+            DiffView::Unified => self.unified_lines().len(),
+            DiffView::SideBySide => self.side_by_side_lines().len(),
+        }
+    }
+
+    fn hunk_positions(&self) -> &[usize] {
+        let Some(detail) = &self.detail else {
+            return &[];
+        };
+
+        match self.effective_view() {
+            DiffView::Unified => &detail.unified_hunks,
+            DiffView::SideBySide => &detail.side_by_side_hunks,
+        }
+    }
 }
 
 fn range_label(change: &SemanticChange) -> Option<String> {
@@ -99,14 +331,14 @@ fn range_label(change: &SemanticChange) -> Option<String> {
         change.after_start_line,
         change.after_end_line,
     ) {
-        (Some(before_start), Some(before_end), Some(after_start), Some(after_end)) => {
-            Some(format!("[L{before_start}-L{before_end} -> L{after_start}-L{after_end}]") )
-        }
+        (Some(before_start), Some(before_end), Some(after_start), Some(after_end)) => Some(
+            format!("[L{before_start}-L{before_end} -> L{after_start}-L{after_end}]"),
+        ),
         (Some(before_start), Some(before_end), None, None) => {
-            Some(format!("[L{before_start}-L{before_end}]") )
+            Some(format!("[L{before_start}-L{before_end}]"))
         }
         (None, None, Some(after_start), Some(after_end)) => {
-            Some(format!("[L{after_start}-L{after_end}]") )
+            Some(format!("[L{after_start}-L{after_end}]"))
         }
         _ => None,
     }
@@ -117,9 +349,8 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use sem_core::model::change::{ChangeType, SemanticChange};
-    use sem_core::parser::differ::DiffResult;
 
-    fn change(file: &str, name: &str) -> SemanticChange {
+    fn change(file: &str, name: &str, before: &str, after: &str) -> SemanticChange {
         SemanticChange {
             id: format!("change::{name}"),
             entity_id: format!("{file}::{name}"),
@@ -128,57 +359,140 @@ mod tests {
             entity_name: name.to_string(),
             file_path: file.to_string(),
             old_file_path: None,
-            before_content: Some("before".to_string()),
-            after_content: Some("after".to_string()),
+            before_content: Some(before.to_string()),
+            after_content: Some(after.to_string()),
             commit_sha: None,
             author: None,
             timestamp: None,
             structural_change: Some(true),
             before_start_line: Some(1),
-            before_end_line: Some(2),
+            before_end_line: Some(20),
             after_start_line: Some(1),
-            after_end_line: Some(3),
+            after_end_line: Some(20),
         }
     }
 
-    fn result() -> DiffResult {
-        DiffResult {
-            changes: vec![change("b.ts", "beta"), change("a.ts", "alpha")],
+    fn app() -> AppState {
+        let before = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n";
+        let after = "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
+        let result = DiffResult {
+            changes: vec![
+                change("b.ts", "beta", before, after),
+                change("a.ts", "alpha", before, after),
+            ],
             file_count: 2,
             added_count: 0,
             modified_count: 2,
             deleted_count: 0,
             moved_count: 0,
             renamed_count: 0,
-        }
+        };
+
+        AppState::from_diff_result(&result, DiffView::Unified)
     }
 
     #[test]
     fn app_state_sorts_rows_by_file_path() {
-        let app = AppState::from_diff_result(&result(), DiffView::Unified);
+        let app = app();
         assert_eq!(app.rows()[0].file_path, "a.ts");
         assert_eq!(app.rows()[1].file_path, "b.ts");
     }
 
     #[test]
     fn app_state_moves_selection_with_j_k() {
-        let mut app = AppState::from_diff_result(&result(), DiffView::Unified);
-
+        let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(app.selected(), 1);
-
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(app.selected(), 0);
-
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
         assert_eq!(app.selected(), 1);
     }
 
     #[test]
     fn app_state_quits_with_q() {
-        let mut app = AppState::from_diff_result(&result(), DiffView::Unified);
+        let mut app = app();
         assert!(!app.should_quit());
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn enter_opens_detail_and_escape_closes_it() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn side_by_side_falls_back_on_narrow_width() {
+        let mut app = app();
+        app.requested_view = DiffView::SideBySide;
+        app.set_viewport(90, 30);
+        assert_eq!(app.effective_view(), DiffView::Unified);
+        assert!(app.fallback_active());
+
+        app.set_viewport(160, 30);
+        assert_eq!(app.effective_view(), DiffView::SideBySide);
+        assert!(!app.fallback_active());
+    }
+
+    #[test]
+    fn hunk_navigation_stays_within_bounds() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let after_next = app.detail_hunk_index();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.detail_hunk_index() >= after_next);
+    }
+
+    #[test]
+    fn help_overlay_toggles_with_question_mark_and_escape() {
+        let mut app = app();
+        assert!(!app.show_help());
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.show_help());
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.show_help());
+    }
+
+    #[test]
+    fn tab_toggles_requested_view_in_detail_mode() {
+        let mut app = app();
+        app.set_viewport(200, 40);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::SideBySide);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::Unified);
+    }
+
+    #[test]
+    fn list_mode_g_and_g_keys_jump_to_bounds() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), app.rows().len() - 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn detail_mode_page_scroll_stays_in_bounds() {
+        let mut app = app();
+        app.set_viewport(120, 12);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let start = app.detail_scroll();
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(app.detail_scroll() >= start);
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll(), 0);
     }
 }
