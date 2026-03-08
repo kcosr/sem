@@ -249,6 +249,29 @@ Gate:
 - Notes:
   - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
 
+### 9.6 H1 Evidence
+- Completion date: 2026-03-08
+- Commit hash(es): `0596184`
+- Acceptance evidence:
+  - manual: verified H1 scope landed in Rust TUI foundation only (no H2 keybinding/render behavior changes):
+    - new persistence + identity/hash module: `crates/sem-cli/src/tui/review_state.rs`
+    - app-state review map/filter foundation and dirty-snapshot plumbing: `crates/sem-cli/src/tui/app.rs`
+    - startup load + debounced save + exit flush integration: `crates/sem-cli/src/tui/mod.rs`
+    - footer status slot now surfaces review-state warnings: `crates/sem-cli/src/tui/render.rs`
+  - `npm run lint` => `NO-GO` for global JS/TS workspace baseline (pre-existing missing Node/module typings and dependency issues unrelated to Rust H1 scope).
+  - `npm test` => `NO-GO` for global JS workspace baseline (`vitest` binary unavailable in current environment; unrelated to Rust H1 scope).
+  - `cargo fmt -p sem-cli` (run in `crates/`) => PASS.
+  - `cargo test -p sem-cli` (run in `crates/`) => PASS (91 passed), including new H1 state/persistence tests in:
+    - `tui::app::tests::{review_toggle_tracks_review_records_when_hash_context_is_available, review_toggle_noops_when_comparator_hash_source_is_unavailable, review_filter_cycle_marks_persistence_dirty}`
+    - `tui::review_state::tests::*` (load/save/compaction/schema-mismatch/hash helpers)
+  - `cargo test -p sem-core` (run in `crates/`) => PASS (41 passed).
+- Review run IDs + triage outcomes:
+  - `r_20260308203516511_f6613e52` (`generic-gemini`): `accept` H1 scope completeness and persistence-loop contract alignment; `defer` cross-session debounce/write-window caveats to later hardening scope; `reject` none.
+  - `r_20260308203630821_e589a884` (`generic-pi`): `accept` H1 boundary correctness (no premature H2 key/render wiring) and broad test coverage; `defer` explicit timed scale smoke and fallback-ordinal collision hardening assertions to H3; `reject` none.
+- Go/No-Go: GO
+- Notes:
+  - external review completion was confirmed from live session stream terminal events (`result.completed`) for both runs.
+
 ## 10. Execution Handoff Contract
 0. Prerequisite:
    - `diff-tui-footer-cell-layout` implementation is landed (shared footer cell baseline with `m` cell and cell-order contract).
