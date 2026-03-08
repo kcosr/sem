@@ -29,15 +29,18 @@ Current footers are assembled as long text strings with ad-hoc separators. This 
 1. Footer is rendered as two logical areas:
    - controls text area (left)
    - cell/status area (right)
+   - controls area retains existing discoverability/help text and non-state hints.
 2. Cell rendering format is lowercase: `<key>: <value>`.
-3. Canonical cell key order is: `m`, `r`, `e`.
-4. This topic implements `m` now and leaves `r`/`e` for later topics.
-5. Step mode token migration is locked:
+3. Cell delimiter is canonical: ` | `.
+4. Canonical cell key order is: `m`, `r`, `e`.
+5. This topic implements `m` now and leaves `r`/`e` for later topics.
+6. Step mode token migration is locked:
    - from `mode: pairwise|cumulative`
    - to `m: pairwise|cumulative`
-6. Rightmost status slot is ephemeral and separate from state cells.
-7. Loading text uses default footer text color; no full-footer color swap.
-8. Narrow-width behavior prioritizes preserving state cells over full controls text.
+7. Rightmost status slot is ephemeral and separate from state cells.
+8. Loading text uses default footer text color; no full-footer color swap.
+9. Narrow-width behavior prioritizes preserving state cells over full controls text.
+10. When state cells and status text compete, status text truncates/omits before state-cell eviction.
 
 ## 7. Contract / Interface Semantics
 This is a TUI runtime contract (not HTTP).
@@ -47,6 +50,7 @@ This is a TUI runtime contract (not HTTP).
 2. `r` reserved values are `all`, `unreviewed`, `reviewed`.
 3. `e` reserved values are `hunk`, `entity`.
 4. Cells are stable, compact, and order-preserving.
+5. Runtime may ignore unknown/unmodeled keys without reordering known keys.
 
 ### 7.2 Status Slot Contract
 1. Loading/status text appears only in the status slot.
@@ -78,7 +82,8 @@ This is a TUI runtime contract (not HTTP).
 1. Footer cell formatting tests for `m` values.
 2. Footer layout tests for list and detail views.
 3. Loading/status rendering tests ensuring no full-footer color mutation.
-4. Regression tests for existing key/stepping behavior.
+4. Narrow-width tests include long-status contention to prove state-cell priority.
+5. Regression tests for existing key/stepping behavior.
 
 ## 12. Acceptance Criteria
 1. Footer shows `m: pairwise` or `m: cumulative` in list/detail views.

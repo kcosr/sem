@@ -18,7 +18,8 @@ Implement the shared footer cell layout baseline and migrate step-mode display t
 Deliverables:
 1. Lock footer rail contract, cell format, and ordering (`m`, `r`, `e`).
 2. Lock migration of step-mode token to `m:`.
-3. Lock status-slot behavior and loading color behavior.
+3. Lock canonical cell delimiter (` | `).
+4. Lock status-slot behavior, loading color behavior, and status-vs-cell truncation priority.
 
 Acceptance:
 1. No ambiguity on token formats or ordering.
@@ -43,7 +44,7 @@ Gate:
 
 ### H2: Hardening + Docs Alignment
 Deliverables:
-1. Add narrow-width layout tests for cell visibility priority.
+1. Add narrow-width layout tests for cell visibility priority (including long-status contention).
 2. Update affected implementation specs to consume footer-cell contract.
 3. Complete Section 9 evidence.
 
@@ -60,7 +61,7 @@ Gate:
 | contract consistency | doc review | design/schema/plan cross-check |
 | mode cell render | render tests | list/detail footer contains `m: <mode>` |
 | status-slot behavior | render tests | loading/status in dedicated slot only |
-| narrow layout | render tests | cells preserved under constrained width |
+| narrow layout | render tests | cells preserved under constrained width, including long-status contention |
 | regression safety | test suite | `cargo test -p sem-cli` |
 
 ## 5. Milestone Commit Gate

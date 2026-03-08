@@ -69,14 +69,17 @@ Define an internal footer-cell rendering contract that standardizes mode/filter/
 2. Cell order is canonical and stable: `m`, then `r`, then `e`.
 3. Baseline implementation may render only `m` while preserving ordering contract.
 4. `m` value domain is `pairwise|cumulative`.
-5. Status text is independent from cells and is rendered in dedicated status slot.
+5. Cells are delimited by ` | ` with no leading/trailing delimiter.
+6. Status text is independent from cells and is rendered in dedicated status slot.
+7. Under constrained width, state cells are preserved first; status text truncates/omits before cell eviction.
 
 ## 5. Deterministic Reject / Status Lock
-1. Unknown cell key is ignored in rendering (non-fatal) and must not reorder known keys.
+1. Unknown cell key encountered at runtime (outside this schema) is ignored in rendering (non-fatal) and must not reorder known keys.
 2. Empty status is represented by `null` and results in no status slot text.
 3. Missing `m` cell in baseline is treated as UI fallback `m: pairwise`.
 
 ## 6. Notes
 1. This contract is internal to Rust TUI runtime.
-2. `rendered` is documentation convenience and may be derived from `key` + `value`.
-3. This addendum implements `m`; `r` and `e` are reserved for downstream topics.
+2. `rendered` is schema/documentation convenience; runtime render output is derived from `key` + `value` and need not round-trip this field.
+3. Key-specific value domains (for `m`, `r`, `e`) are locked by contract semantics and renderer behavior; this skeleton remains intentionally lightweight.
+4. This addendum implements `m`; `r` and `e` are reserved for downstream topics.
