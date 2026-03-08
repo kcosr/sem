@@ -32,7 +32,6 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
-    list_header_command: String,
     selected: usize,
     mode: Mode,
     requested_view: DiffView,
@@ -56,7 +55,6 @@ impl AppState {
 
         Self {
             rows,
-            list_header_command: "sem diff --tui".to_string(),
             selected: 0,
             mode: Mode::List,
             requested_view: initial_view,
@@ -104,14 +102,6 @@ impl AppState {
 
     pub fn rows(&self) -> &[EntityRow] {
         &self.rows
-    }
-
-    pub fn set_list_header_command(&mut self, command: String) {
-        self.list_header_command = command;
-    }
-
-    pub fn list_header_command(&self) -> &str {
-        &self.list_header_command
     }
 
     pub fn configure_commit_navigation(

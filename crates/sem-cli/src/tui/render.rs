@@ -63,22 +63,12 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(frame.area());
     let widths = compute_list_column_widths(chunks[1].width);
-
-    let status_line = if app.commit_loading() {
-        "Status: loading commit snapshot...".to_string()
-    } else if let Some(message) = app.commit_status_message() {
-        format!("Status: {message}")
-    } else if app.commit_navigation_enabled() {
-        "Status: ready (`[` older, `]` newer)".to_string()
-    } else {
-        "Status: commit stepping disabled for this mode".to_string()
-    };
 
     let columns = format!(
         "  {} {} {} {}",
@@ -89,12 +79,10 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     );
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(app.list_header_command(), Style::default().fg(Color::Cyan)),
             Line::styled(
                 app.commit_context_line(),
                 Style::default().fg(Color::LightCyan),
             ),
-            Line::styled(status_line, Style::default().fg(Color::Yellow)),
             Line::raw(""),
             Line::styled(columns, Style::default().fg(Color::DarkGray)),
         ]),
@@ -183,14 +171,14 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     if !app.commit_navigation_enabled() {
         footer.push_str(" | commit stepping disabled");
     }
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    draw_footer(frame, chunks[2], &footer, app.commit_loading());
 }
 
 fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
@@ -198,7 +186,6 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(app.list_header_command(), Style::default().fg(Color::Cyan)),
             Line::styled(
                 app.commit_context_line(),
                 Style::default().fg(Color::LightCyan),
@@ -262,13 +249,29 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     }
     if !app.commit_navigation_enabled() {
         footer.push_str(" | commit stepping disabled");
-    } else if app.commit_loading() {
-        footer.push_str(" | loading commit snapshot...");
     } else if let Some(message) = app.commit_status_message() {
         footer.push_str(&format!(" | {message}"));
     }
 
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    draw_footer(frame, chunks[2], &footer, app.commit_loading());
+}
+
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, footer: &str, loading: bool) {
+    if !loading {
+        frame.render_widget(Paragraph::new(footer), area);
+        return;
+    }
+
+    let footer_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(11)])
+        .split(area);
+
+    frame.render_widget(Paragraph::new(footer), footer_chunks[0]);
+    frame.render_widget(
+        Paragraph::new("Loading...").alignment(Alignment::Right),
+        footer_chunks[1],
+    );
 }
 
 fn draw_help_overlay(frame: &mut Frame<'_>) {
@@ -1035,7 +1038,6 @@ mod tests {
                 has_newer: true,
             }),
         );
-        app.set_list_header_command("sem diff --tui --commit HEAD~2".to_string());
         app.set_commit_loading(true);
 
         let backend = TestBackend::new(120, 24);

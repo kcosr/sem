@@ -4,7 +4,6 @@ mod render;
 
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -38,7 +37,6 @@ pub fn run_tui(
 
     let mut app_state = app::AppState::from_diff_result(result, initial_view);
     render::prewarm_syntax_highlighting_async();
-    app_state.set_list_header_command(invoked_command_line());
     let (context, source_mode, cursor) = if let Some((context, cursor)) = commit_navigation {
         (context, TuiSourceMode::Commit, Some(cursor))
     } else {
@@ -98,27 +96,6 @@ pub fn run_tui(
     drop(guard);
     terminal.show_cursor()?;
     Ok(())
-}
-
-fn invoked_command_line() -> String {
-    let args: Vec<String> = std::env::args().collect();
-    format_invoked_command(&args)
-}
-
-fn format_invoked_command(args: &[String]) -> String {
-    if args.is_empty() {
-        return "sem diff --tui".to_string();
-    }
-
-    let executable = Path::new(&args[0])
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map_or_else(|| args[0].clone(), ToString::to_string);
-
-    std::iter::once(executable)
-        .chain(args.iter().skip(1).cloned())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 struct ReloadCoordinator {
@@ -212,7 +189,7 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_invoked_command, ReloadCoordinator};
+    use super::ReloadCoordinator;
     use crate::commands::diff::{
         CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest,
         TuiSourceMode,
@@ -220,21 +197,6 @@ mod tests {
     use std::collections::HashMap;
     use std::thread;
     use std::time::Duration;
-
-    #[test]
-    fn format_invoked_command_uses_executable_basename() {
-        let args = vec![
-            "/home/kevin/worktrees/sem/crates/target/debug/sem".to_string(),
-            "diff".to_string(),
-            "--tui".to_string(),
-            "--diff-view".to_string(),
-            "side-by-side".to_string(),
-        ];
-        assert_eq!(
-            format_invoked_command(&args),
-            "sem diff --tui --diff-view side-by-side"
-        );
-    }
 
     #[test]
     fn reload_coordinator_drops_stale_results_and_keeps_latest_request() {
