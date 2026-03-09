@@ -30,7 +30,7 @@ sem diff --tui --tui-http --tui-http-port 8899
 ```
 
 `sem diff --tui --tui-http` enables a localhost-only read-only endpoint at `127.0.0.1:7778` by default:
-- `GET /state` returns `session` and `selection`
+- `GET /state` returns `session`, `selection`, and `replay`
 - unknown route returns `404` JSON `{ "error": "notFound", "path": "<route>" }`
 - non-GET `/state` returns `405` JSON `{ "error": "methodNotAllowed", "path": "/state", "method": "<verb>" }`
 

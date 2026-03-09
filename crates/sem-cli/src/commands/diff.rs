@@ -419,8 +419,6 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             http_enabled: opts.tui_http,
             http_port: opts.tui_http_port,
             source_mode: resolve_tui_http_source_mode(opts),
-            cwd: opts.cwd.clone(),
-            file_exts: opts.file_exts.clone(),
         };
         tui::run_tui(&initial_result, opts.diff_view, navigation, runtime_options)
             .map_err(|error| format!("failed to start TUI: {error}"))?;

@@ -4,7 +4,6 @@ use sem_core::parser::differ::DiffResult;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 
-use super::http_state::{GraphImpactSnapshot, GraphUnavailableReason, IMPACT_RESPONSE_CAP_DEFAULT};
 use super::review_state::{
     build_logical_entity_key, build_target_content_hash, current_updated_at,
     endpoint_supports_review_hash, ReviewFilter, ReviewIdentity, ReviewStateData,
@@ -44,8 +43,6 @@ pub struct AppState {
     entity_context_mode: EntityContextMode,
     detail_scroll: usize,
     detail_hunk_index: usize,
-    graph_snapshot: GraphImpactSnapshot,
-    impact_panel_expanded: bool,
     detail: Option<RenderedDiff>,
     show_help: bool,
     should_quit: bool,
@@ -87,11 +84,6 @@ impl AppState {
             entity_context_mode: EntityContextMode::Hunk,
             detail_scroll: 0,
             detail_hunk_index: 0,
-            graph_snapshot: GraphImpactSnapshot::unavailable(
-                GraphUnavailableReason::SelectionNotResolvable,
-                IMPACT_RESPONSE_CAP_DEFAULT,
-            ),
-            impact_panel_expanded: false,
             detail: None,
             show_help: false,
             should_quit: false,
@@ -200,6 +192,7 @@ impl AppState {
         self.commit_loading
     }
 
+    #[cfg(test)]
     pub fn commit_status_message(&self) -> Option<&str> {
         self.commit_status_message.as_deref()
     }
@@ -481,16 +474,22 @@ impl AppState {
         }
     }
 
-    pub fn graph_snapshot(&self) -> &GraphImpactSnapshot {
-        &self.graph_snapshot
-    }
+    pub fn selected_hunk_header(&self) -> Option<&str> {
+        if self.mode != Mode::Detail {
+            return None;
+        }
 
-    pub fn set_graph_snapshot(&mut self, snapshot: GraphImpactSnapshot) {
-        self.graph_snapshot = snapshot;
-    }
-
-    pub fn impact_panel_expanded(&self) -> bool {
-        self.impact_panel_expanded
+        let detail = self.detail.as_ref()?;
+        let line_index = self.hunk_positions().get(self.detail_hunk_index).copied()?;
+        match self.effective_view() {
+            DiffView::Unified => detail
+                .unified_lines
+                .get(line_index)
+                .and_then(|(kind, line)| (*kind == LineKind::Header).then_some(line.as_str())),
+            DiffView::SideBySide => detail.side_by_side_lines.get(line_index).and_then(|line| {
+                (line.kind == LineKind::Header).then_some(line.left_text.as_str())
+            }),
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -1094,18 +1093,18 @@ mod tests {
     #[test]
     fn i_key_is_noop_in_list_mode() {
         let mut app = app();
-        assert!(!app.impact_panel_expanded());
+        assert_eq!(app.mode(), Mode::List);
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(!app.impact_panel_expanded());
+        assert_eq!(app.mode(), Mode::List);
     }
 
     #[test]
     fn i_key_is_noop_in_detail_mode() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(!app.impact_panel_expanded());
+        assert_eq!(app.mode(), Mode::Detail);
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(!app.impact_panel_expanded());
+        assert_eq!(app.mode(), Mode::Detail);
     }
 
     #[test]

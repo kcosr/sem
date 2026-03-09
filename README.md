@@ -117,7 +117,7 @@ Review state is persisted per-repo in `.sem/tui-review-state.json` (local metada
 
 When enabled with `--tui-http`, TUI exposes a localhost-only read-only state snapshot endpoint:
 
-- `GET /state` -> `200` payload sections: `session`, `selection`
+- `GET /state` -> `200` payload sections: `session`, `selection`, `replay`
 - unknown route -> `404` JSON `{ "error": "notFound", "path": "<route>" }`
 - non-GET `/state` -> `405` JSON `{ "error": "methodNotAllowed", "path": "/state", "method": "<verb>" }`
 
@@ -125,6 +125,7 @@ Notes:
 - default bind is `127.0.0.1:7778` (override with `--tui-http-port`)
 - bind failure is non-fatal (TUI continues)
 - endpoint does not emit CORS headers
+- `replay.gitCommand` provides a concrete `git diff ...` command when current navigation context is reproducible
 
 ## What it parses
 

@@ -34,6 +34,7 @@
 - TUI list/detail footer cells now include entity-context state (`e: <hunk|entity>`) with shared `m | r | e` ordering.
 - TUI detail rendering now supports full-entity mode changed-region anchors for deterministic `n/p` traversal in unified and side-by-side views.
 - Filtered TUI list rendering now hides file headers with zero visible entities and shows an explicit no-match row when filter output is empty.
+- Diff TUI `/state` payload now omits redundant listener `host`/`port` fields and includes `replay` command context for reproducing the same diff view.
 
 ### Testing
 - Added sem-core tests for line-range population and serialization behavior.

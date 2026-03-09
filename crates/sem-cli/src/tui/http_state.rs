@@ -1,20 +1,25 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+#[cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(test)]
 use sem_core::parser::graph::{EntityGraph, EntityInfo};
+#[cfg(test)]
 use sem_core::parser::plugins::create_default_registry;
 use serde::Serialize;
 
+#[cfg(test)]
 use crate::commands::graph::{find_supported_files_public, normalize_exts};
 
-pub const IMPACT_RESPONSE_CAP_DEFAULT: usize = 10_000;
-pub const PANEL_DISPLAY_CAP_DEFAULT: usize = 25;
+#[cfg(test)]
+const IMPACT_RESPONSE_CAP_DEFAULT: usize = 10_000;
 const LOCALHOST: &str = "127.0.0.1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -25,16 +30,7 @@ pub enum HttpSourceMode {
     TwoFile,
 }
 
-impl HttpSourceMode {
-    pub fn as_token(self) -> &'static str {
-        match self {
-            Self::Repository => "repository",
-            Self::Stdin => "stdin",
-            Self::TwoFile => "twoFile",
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GraphUnavailableReason {
@@ -43,16 +39,7 @@ pub enum GraphUnavailableReason {
     SelectionNotResolvable,
 }
 
-impl GraphUnavailableReason {
-    pub fn as_token(self) -> &'static str {
-        match self {
-            Self::UnsupportedSourceMode => "unsupportedSourceMode",
-            Self::GraphBuildFailed => "graphBuildFailed",
-            Self::SelectionNotResolvable => "selectionNotResolvable",
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GraphEntityRef {
     pub id: String,
@@ -61,6 +48,7 @@ pub struct GraphEntityRef {
     pub lines: [usize; 2],
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphSelection {
     pub graph_id: Option<String>,
@@ -70,6 +58,7 @@ pub struct GraphSelection {
     pub line_range: Option<[usize; 2]>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphImpactSnapshot {
     pub graph_available: bool,
@@ -82,6 +71,7 @@ pub struct GraphImpactSnapshot {
     pub impact_entities: Vec<GraphEntityRef>,
 }
 
+#[cfg(test)]
 impl GraphImpactSnapshot {
     pub fn unavailable(reason: GraphUnavailableReason, impact_cap: usize) -> Self {
         Self {
@@ -104,27 +94,21 @@ impl GraphImpactSnapshot {
             self.impact_total
         )
     }
-
-    pub fn panel_rows(
-        entities: &[GraphEntityRef],
-        panel_cap: usize,
-    ) -> (Vec<GraphEntityRef>, usize) {
-        let visible = entities.iter().take(panel_cap).cloned().collect();
-        let hidden = entities.len().saturating_sub(panel_cap);
-        (visible, hidden)
-    }
 }
 
+#[cfg(test)]
 enum GraphSnapshotState {
     Available(EntityGraph),
     Unavailable(GraphUnavailableReason),
 }
 
+#[cfg(test)]
 pub struct GraphSnapshotService {
     state: GraphSnapshotState,
     impact_cap: usize,
 }
 
+#[cfg(test)]
 impl GraphSnapshotService {
     pub fn new(cwd: &str, file_exts: &[String], source_mode: HttpSourceMode) -> Self {
         Self::with_caps(cwd, file_exts, source_mode, IMPACT_RESPONSE_CAP_DEFAULT)
@@ -245,23 +229,43 @@ pub struct SnapshotSelectionInput {
     pub entity_type: Option<String>,
     pub entity_name: Option<String>,
     pub line_range: Option<[usize; 2]>,
+    pub hunk: Option<SnapshotHunkInput>,
     pub ui: SnapshotUiInput,
+}
+
+#[derive(Clone, Debug)]
+pub struct SnapshotHunkInput {
+    pub index: usize,
+    pub total: usize,
+    pub header: String,
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct SnapshotSessionInput {
     pub http_enabled: bool,
     pub http_bound: bool,
-    pub host: String,
-    pub port: u16,
     pub source_mode: HttpSourceMode,
     pub started_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SnapshotReplayInput {
+    pub available: bool,
+    pub git_command: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HttpStateSnapshot {
     pub session: SessionSnapshot,
     pub selection: SelectionSnapshot,
+    pub replay: ReplaySnapshot,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -276,8 +280,6 @@ pub struct SessionSnapshot {
 pub struct SessionHttpSnapshot {
     pub enabled: bool,
     pub bound: bool,
-    pub host: String,
-    pub port: u16,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -288,7 +290,20 @@ pub struct SelectionSnapshot {
     pub entity_type: Option<String>,
     pub entity_name: Option<String>,
     pub line_range: Option<[usize; 2]>,
+    pub hunk: Option<SelectionHunkSnapshot>,
     pub ui: SelectionUiSnapshot,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionHunkSnapshot {
+    pub index: usize,
+    pub total: usize,
+    pub header: String,
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -302,17 +317,26 @@ pub struct SelectionUiSnapshot {
     pub anchors: [usize; 2],
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaySnapshot {
+    pub available: bool,
+    pub git_command: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub reason: Option<String>,
+}
+
 pub fn build_state_snapshot(
     session: &SnapshotSessionInput,
     selection: SnapshotSelectionInput,
+    replay: SnapshotReplayInput,
 ) -> HttpStateSnapshot {
     HttpStateSnapshot {
         session: SessionSnapshot {
             http: SessionHttpSnapshot {
                 enabled: session.http_enabled,
                 bound: session.http_bound,
-                host: session.host.clone(),
-                port: session.port,
             },
             source_mode: session.source_mode,
             started_at: session.started_at.clone(),
@@ -323,6 +347,15 @@ pub fn build_state_snapshot(
             entity_type: selection.entity_type,
             entity_name: selection.entity_name,
             line_range: selection.line_range,
+            hunk: selection.hunk.map(|hunk| SelectionHunkSnapshot {
+                index: hunk.index,
+                total: hunk.total,
+                header: hunk.header,
+                old_start: hunk.old_start,
+                old_count: hunk.old_count,
+                new_start: hunk.new_start,
+                new_count: hunk.new_count,
+            }),
             ui: SelectionUiSnapshot {
                 mode: selection.ui.mode,
                 view: selection.ui.view,
@@ -331,6 +364,13 @@ pub fn build_state_snapshot(
                 scroll: selection.ui.scroll,
                 anchors: selection.ui.anchors,
             },
+        },
+        replay: ReplaySnapshot {
+            available: replay.available,
+            git_command: replay.git_command,
+            from: replay.from,
+            to: replay.to,
+            reason: replay.reason,
         },
     }
 }
@@ -427,10 +467,7 @@ impl HttpStateServer {
         self.bind_error.as_deref()
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
+    #[cfg(test)]
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -537,8 +574,6 @@ fn fallback_state_snapshot() -> HttpStateSnapshot {
             http: SessionHttpSnapshot {
                 enabled: false,
                 bound: false,
-                host: LOCALHOST.to_string(),
-                port: 0,
             },
             source_mode: HttpSourceMode::Repository,
             started_at: String::new(),
@@ -549,6 +584,7 @@ fn fallback_state_snapshot() -> HttpStateSnapshot {
             entity_type: None,
             entity_name: None,
             line_range: None,
+            hunk: None,
             ui: SelectionUiSnapshot {
                 mode: "list".to_string(),
                 view: "unified".to_string(),
@@ -558,9 +594,17 @@ fn fallback_state_snapshot() -> HttpStateSnapshot {
                 anchors: [0, 0],
             },
         },
+        replay: ReplaySnapshot {
+            available: false,
+            git_command: None,
+            from: None,
+            to: None,
+            reason: Some("navigationStateUnavailable".to_string()),
+        },
     }
 }
 
+#[cfg(test)]
 fn resolve_selection_to_entity_id(
     graph: &EntityGraph,
     selection: Option<&GraphSelection>,
@@ -628,6 +672,7 @@ fn resolve_selection_to_entity_id(
     candidates.first().map(|entity| entity.id.clone())
 }
 
+#[cfg(test)]
 fn overlap_len(a: (usize, usize), b: (usize, usize)) -> usize {
     let start = a.0.max(b.0);
     let end = a.1.min(b.1);
@@ -637,6 +682,7 @@ fn overlap_len(a: (usize, usize), b: (usize, usize)) -> usize {
     end.saturating_sub(start).saturating_add(1)
 }
 
+#[cfg(test)]
 fn entity_info_to_ref(entity: &EntityInfo) -> GraphEntityRef {
     GraphEntityRef {
         id: entity.id.clone(),
@@ -646,6 +692,7 @@ fn entity_info_to_ref(entity: &EntityInfo) -> GraphEntityRef {
     }
 }
 
+#[cfg(test)]
 fn sort_entity_refs(entities: &mut [GraphEntityRef]) {
     entities.sort_by(|a, b| {
         a.file
@@ -661,6 +708,7 @@ mod tests {
     use super::*;
     use sem_core::parser::graph::{EntityGraph, EntityInfo};
     use serde_json::Value;
+    use std::io::Read;
 
     fn entity(id: &str, name: &str, file: &str, start_line: usize, end_line: usize) -> EntityInfo {
         EntityInfo {
@@ -690,14 +738,26 @@ mod tests {
         }
     }
 
-    fn sample_session(bound: bool, port: u16, source_mode: HttpSourceMode) -> SnapshotSessionInput {
+    fn sample_session(
+        bound: bool,
+        _port: u16,
+        source_mode: HttpSourceMode,
+    ) -> SnapshotSessionInput {
         SnapshotSessionInput {
             http_enabled: true,
             http_bound: bound,
-            host: LOCALHOST.to_string(),
-            port,
             source_mode,
             started_at: "2026-03-08T21:00:00Z".to_string(),
+        }
+    }
+
+    fn sample_replay() -> SnapshotReplayInput {
+        SnapshotReplayInput {
+            available: false,
+            git_command: None,
+            from: None,
+            to: None,
+            reason: Some("unsupportedSourceMode".to_string()),
         }
     }
 
@@ -708,6 +768,7 @@ mod tests {
             entity_type: selected.then(|| "function".to_string()),
             entity_name: selected.then(|| "root".to_string()),
             line_range: selected.then_some([10, 20]),
+            hunk: None,
             ui: SnapshotUiInput {
                 mode: "detail".to_string(),
                 view: "unified".to_string(),
@@ -1005,14 +1066,23 @@ mod tests {
 
     #[test]
     fn build_state_snapshot_serializes_full_shape() {
-        let snapshot = build_state_snapshot(&sample_session(true, 7778, HttpSourceMode::Repository), sample_selection(false));
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            sample_replay(),
+        );
 
         let value = serde_json::to_value(snapshot).expect("snapshot must serialize");
         assert!(value.get("session").is_some());
         assert!(value.get("selection").is_some());
+        assert!(value.get("replay").is_some());
         assert!(value.get("graph").is_none());
         assert!(value.get("impact").is_none());
         assert!(value.get("panel").is_none());
+        assert_eq!(
+            value.pointer("/replay/available").and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1024,13 +1094,14 @@ mod tests {
         ];
 
         for (source_mode, expected) in cases {
-            let snapshot =
-                build_state_snapshot(&sample_session(true, 7778, source_mode), sample_selection(false));
+            let snapshot = build_state_snapshot(
+                &sample_session(true, 7778, source_mode),
+                sample_selection(false),
+                sample_replay(),
+            );
             let value = serde_json::to_value(snapshot).expect("snapshot must serialize");
             assert_eq!(
-                value
-                    .pointer("/session/sourceMode")
-                    .and_then(Value::as_str),
+                value.pointer("/session/sourceMode").and_then(Value::as_str),
                 Some(expected)
             );
         }
@@ -1038,8 +1109,11 @@ mod tests {
 
     #[test]
     fn http_server_returns_state_snapshot_for_get_state() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            sample_replay(),
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1051,6 +1125,7 @@ mod tests {
         assert_eq!(status, 200);
         assert!(payload.get("session").is_some());
         assert!(payload.get("selection").is_some());
+        assert!(payload.get("replay").is_some());
         assert!(payload.get("graph").is_none());
         assert!(payload.get("impact").is_none());
         assert!(payload.get("panel").is_none());
@@ -1060,8 +1135,11 @@ mod tests {
 
     #[test]
     fn http_server_returns_updated_snapshot_after_replace() {
-        let initial_snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let initial_snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            sample_replay(),
+        );
         let state = shared_state(initial_snapshot);
         let mut server = HttpStateServer::start(true, 0, state.clone());
 
@@ -1076,8 +1154,11 @@ mod tests {
             Some(false)
         );
 
-        let updated_snapshot =
-            build_state_snapshot(&sample_session(true, server.port(), HttpSourceMode::Repository), sample_selection(true));
+        let updated_snapshot = build_state_snapshot(
+            &sample_session(true, server.port(), HttpSourceMode::Repository),
+            sample_selection(true),
+            sample_replay(),
+        );
         replace_shared_snapshot(&state, updated_snapshot);
 
         let (_, after_payload) = send_http_request(
@@ -1102,8 +1183,11 @@ mod tests {
 
     #[test]
     fn http_server_returns_not_found_for_unknown_route() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Stdin), sample_selection(false));
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Stdin),
+            sample_selection(false),
+            sample_replay(),
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1127,8 +1211,11 @@ mod tests {
 
     #[test]
     fn http_server_returns_method_not_allowed_for_non_get_state() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Stdin), sample_selection(false));
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Stdin),
+            sample_selection(false),
+            sample_replay(),
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1150,8 +1237,11 @@ mod tests {
 
     #[test]
     fn http_server_sets_json_content_type_header() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            sample_replay(),
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1183,6 +1273,7 @@ mod tests {
         let snapshot = build_state_snapshot(
             &sample_session(true, occupied_port, HttpSourceMode::Stdin),
             sample_selection(false),
+            sample_replay(),
         );
         let state = shared_state(snapshot);
 

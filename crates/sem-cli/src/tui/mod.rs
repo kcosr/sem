@@ -28,7 +28,8 @@ use crate::commands::diff::{
 use app::PendingNavigationRequest;
 use http_state::{
     build_state_snapshot, replace_shared_snapshot, shared_state, HttpSourceMode, HttpStateServer,
-    SnapshotSelectionInput, SnapshotSessionInput, SnapshotUiInput,
+    SnapshotHunkInput, SnapshotReplayInput, SnapshotSelectionInput, SnapshotSessionInput,
+    SnapshotUiInput,
 };
 use review_state::ReviewStateStoreInit;
 
@@ -39,8 +40,6 @@ pub struct TuiRuntimeOptions {
     pub http_enabled: bool,
     pub http_port: u16,
     pub source_mode: HttpSourceMode,
-    pub cwd: String,
-    pub file_exts: Vec<String>,
 }
 
 pub fn run_tui(
@@ -96,8 +95,6 @@ pub fn run_tui(
     let initial_session = SnapshotSessionInput {
         http_enabled: runtime_options.http_enabled,
         http_bound: false,
-        host: "127.0.0.1".to_string(),
-        port: runtime_options.http_port,
         source_mode: runtime_options.source_mode,
         started_at: started_at.clone(),
     };
@@ -111,8 +108,6 @@ pub fn run_tui(
     let session = SnapshotSessionInput {
         http_enabled: http_server.enabled(),
         http_bound: http_server.bound(),
-        host: http_server.host().to_string(),
-        port: http_server.port(),
         source_mode: runtime_options.source_mode,
         started_at,
     };
@@ -255,7 +250,8 @@ fn snapshot_for_http_state(
     session: &SnapshotSessionInput,
 ) -> http_state::HttpStateSnapshot {
     let selection = snapshot_inputs_from_app_state(app_state);
-    build_state_snapshot(session, selection)
+    let replay = snapshot_replay_input(app_state);
+    build_state_snapshot(session, selection, replay)
 }
 
 fn sync_http_state(
@@ -268,13 +264,14 @@ fn sync_http_state(
 }
 
 fn snapshot_inputs_from_app_state(app_state: &app::AppState) -> SnapshotSelectionInput {
+    let anchors = app_state.detail_anchor_state();
     let ui = SnapshotUiInput {
         mode: mode_token(app_state.mode()).to_string(),
         view: view_token(app_state.effective_view()).to_string(),
         context_mode: app_state.entity_context_mode().as_token().to_string(),
         hunk_index: app_state.detail_hunk_index(),
         scroll: app_state.detail_scroll(),
-        anchors: app_state.detail_anchor_state(),
+        anchors,
     };
 
     let Some(row) = app_state.selected_row() else {
@@ -284,18 +281,64 @@ fn snapshot_inputs_from_app_state(app_state: &app::AppState) -> SnapshotSelectio
             entity_type: None,
             entity_name: None,
             line_range: None,
+            hunk: None,
             ui,
         };
     };
 
     let line_range = row_line_range(row);
+    let hunk = selected_hunk_snapshot(app_state, anchors);
     SnapshotSelectionInput {
         selected: true,
         file: Some(row.file_path.clone()),
         entity_type: Some(row.entity_type.clone()),
         entity_name: Some(row.entity_name.clone()),
         line_range,
+        hunk,
         ui,
+    }
+}
+
+fn snapshot_replay_input(app_state: &app::AppState) -> SnapshotReplayInput {
+    if let Some((_, from, _, to)) = app_state.comparison_line() {
+        let git_command = git_replay_command(&from, &to);
+        let (available, reason) = if git_command.is_some() {
+            (true, None)
+        } else {
+            (false, Some("unsupportedEndpointPair".to_string()))
+        };
+        return SnapshotReplayInput {
+            available,
+            git_command,
+            from: Some(from),
+            to: Some(to),
+            reason,
+        };
+    }
+
+    let reason = match app_state.commit_source_mode() {
+        TuiSourceMode::Unsupported => "unsupportedSourceMode",
+        _ => "navigationStateUnavailable",
+    };
+    SnapshotReplayInput {
+        available: false,
+        git_command: None,
+        from: None,
+        to: None,
+        reason: Some(reason.to_string()),
+    }
+}
+
+fn git_replay_command(from: &str, to: &str) -> Option<String> {
+    let from_is_pseudo = from == "INDEX" || from == "WORKING";
+    let to_is_pseudo = to == "INDEX" || to == "WORKING";
+
+    match (from, to) {
+        ("INDEX", "WORKING") => Some("git diff".to_string()),
+        (from, "WORKING") if !from_is_pseudo => Some(format!("git diff {from}")),
+        (from, "INDEX") if !from_is_pseudo => Some(format!("git diff --cached {from}")),
+        (from, to) if !from_is_pseudo && !to_is_pseudo => Some(format!("git diff {from}..{to}")),
+        _ => None,
     }
 }
 
@@ -310,6 +353,54 @@ fn row_line_range(row: &app::EntityRow) -> Option<[usize; 2]> {
         (_, _, Some(start), Some(end)) => Some([start.min(end), start.max(end)]),
         _ => None,
     }
+}
+
+fn selected_hunk_snapshot(
+    app_state: &app::AppState,
+    anchors: [usize; 2],
+) -> Option<SnapshotHunkInput> {
+    let [index, total] = anchors;
+    if index == 0 || total == 0 {
+        return None;
+    }
+
+    let header = app_state.selected_hunk_header()?.to_string();
+    let (old_start, old_count, new_start, new_count) = parse_hunk_header(&header)?;
+    Some(SnapshotHunkInput {
+        index,
+        total,
+        header,
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+    })
+}
+
+fn parse_hunk_header(header: &str) -> Option<(usize, usize, usize, usize)> {
+    let mut parts = header.split_whitespace();
+    if parts.next()? != "@@" {
+        return None;
+    }
+    let old = parse_hunk_range(parts.next()?)?;
+    let new = parse_hunk_range(parts.next()?)?;
+    if parts.next()? != "@@" {
+        return None;
+    }
+    Some((old.0, old.1, new.0, new.1))
+}
+
+fn parse_hunk_range(token: &str) -> Option<(usize, usize)> {
+    let range = token
+        .strip_prefix('-')
+        .or_else(|| token.strip_prefix('+'))?;
+    let mut parts = range.split(',');
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let count = parts.next()?.parse::<usize>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((start, count))
 }
 
 fn mode_token(mode: app::Mode) -> &'static str {
@@ -439,8 +530,8 @@ mod tests {
     use super::http_state::{HttpSourceMode, SnapshotSessionInput};
     use super::{snapshot_for_http_state, ReloadCoordinator, WorkerRequest};
     use crate::commands::diff::{
-        CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest, DiffView,
-        StepMode, TuiSourceMode,
+        CommitCursor, CommitLoadStatus, CommitNavigationContext, CommitStepAction,
+        CommitStepRequest, DiffView, StepEndpoint, StepEndpointKind, StepMode, TuiSourceMode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use sem_core::model::change::{ChangeType, SemanticChange};
@@ -533,8 +624,6 @@ mod tests {
         let session = SnapshotSessionInput {
             http_enabled: true,
             http_bound: true,
-            host: "127.0.0.1".to_string(),
-            port: 7778,
             source_mode: HttpSourceMode::Stdin,
             started_at: "2026-03-08T21:00:00Z".to_string(),
         };
@@ -549,6 +638,90 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let list_after_close = snapshot_for_http_state(&app, &session);
         assert_eq!(list_after_close.selection.ui.mode, "list");
+    }
+
+    #[test]
+    fn snapshot_includes_replay_command_when_commit_comparison_is_available() {
+        let mut app = super::app::AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let endpoints = vec![
+            StepEndpoint {
+                endpoint_id: "commit:aaa".to_string(),
+                display_ref: Some("HEAD~1".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "aaa".to_string(),
+                },
+            },
+            StepEndpoint {
+                endpoint_id: "commit:bbb".to_string(),
+                display_ref: Some("HEAD".to_string()),
+                kind: StepEndpointKind::Commit {
+                    sha: "bbb".to_string(),
+                },
+            },
+        ];
+        let endpoint_index = HashMap::from([
+            ("commit:aaa".to_string(), 0usize),
+            ("commit:bbb".to_string(), 1usize),
+        ]);
+        app.configure_commit_navigation(
+            TuiSourceMode::Unified,
+            endpoints,
+            endpoint_index,
+            Some(CommitCursor {
+                endpoint_id: "commit:bbb".to_string(),
+                index: 1,
+                rev_label: Some("HEAD".to_string()),
+                sha: "bbb".to_string(),
+                subject: "tip".to_string(),
+                has_older: true,
+                has_newer: false,
+            }),
+            StepMode::Pairwise,
+            None,
+        );
+
+        let session = SnapshotSessionInput {
+            http_enabled: true,
+            http_bound: true,
+            source_mode: HttpSourceMode::Repository,
+            started_at: "2026-03-08T21:00:00Z".to_string(),
+        };
+        let snapshot = snapshot_for_http_state(&app, &session);
+
+        assert!(snapshot.replay.available);
+        assert_eq!(
+            snapshot.replay.git_command.as_deref(),
+            Some("git diff HEAD~1..HEAD")
+        );
+        assert_eq!(snapshot.replay.from.as_deref(), Some("HEAD~1"));
+        assert_eq!(snapshot.replay.to.as_deref(), Some("HEAD"));
+        assert_eq!(snapshot.replay.reason, None);
+    }
+
+    #[test]
+    fn snapshot_includes_selected_hunk_range_details() {
+        let mut app = super::app::AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        let session = SnapshotSessionInput {
+            http_enabled: true,
+            http_bound: true,
+            source_mode: HttpSourceMode::Repository,
+            started_at: "2026-03-08T21:00:00Z".to_string(),
+        };
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let snapshot = snapshot_for_http_state(&app, &session);
+        let hunk = snapshot
+            .selection
+            .hunk
+            .expect("selected hunk details should be present in detail mode");
+
+        assert_eq!(hunk.index, 1);
+        assert_eq!(hunk.total, 1);
+        assert_eq!(hunk.header, "@@ -1,3 +1,3 @@");
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 3);
+        assert_eq!(hunk.new_start, 1);
+        assert_eq!(hunk.new_count, 3);
     }
 
     fn wait_for_response(
