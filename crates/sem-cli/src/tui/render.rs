@@ -15,6 +15,9 @@ use crate::commands::diff::DiffView;
 
 use super::app::{AppState, Mode};
 use super::detail::LineKind;
+use super::http_state::{
+    GraphEntityRef, GraphImpactSnapshot, GraphUnavailableReason, PANEL_DISPLAY_CAP_DEFAULT,
+};
 
 const ICON_COL_WIDTH: usize = 2;
 const INTER_COL_SPACES: usize = 3;
@@ -31,6 +34,7 @@ const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
 const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
 const DIFF_HUNK_FG: Color = Color::Gray;
 const FOOTER_CELL_SEPARATOR: &str = " | ";
+const DETAIL_PANEL_MIN_HEIGHT: u16 = 8;
 
 #[derive(Clone, Copy, Debug)]
 struct ListColumnWidths {
@@ -217,6 +221,16 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
             Constraint::Length(2),
         ])
         .split(frame.area());
+    let panel_state = if app.impact_panel_expanded() {
+        "expanded"
+    } else {
+        "collapsed"
+    };
+    let summary_line = format!(
+        "{} | panel:{panel_state}",
+        app.graph_snapshot().panel_summary()
+    );
+
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
@@ -224,11 +238,24 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
                 Style::default().fg(Color::LightCyan),
             ),
             Line::raw(app.detail_title()),
+            Line::styled(summary_line, Style::default().fg(Color::DarkGray)),
         ]),
         chunks[0],
     );
 
-    draw_diff_content(frame, chunks[1], app);
+    if app.impact_panel_expanded() && chunks[1].height > 6 {
+        let panel_height = (chunks[1].height / 2)
+            .max(DETAIL_PANEL_MIN_HEIGHT)
+            .min(chunks[1].height.saturating_sub(3));
+        let content_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
+            .split(chunks[1]);
+        draw_diff_content(frame, content_chunks[0], app);
+        draw_impact_panel(frame, content_chunks[1], app);
+    } else {
+        draw_diff_content(frame, chunks[1], app);
+    }
 
     let footer = detail_footer_parts(app);
     draw_footer(frame, chunks[2], &footer);
@@ -279,6 +306,58 @@ fn draw_diff_content(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     }
 }
 
+fn draw_impact_panel(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let snapshot = app.graph_snapshot();
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    append_impact_section(&mut lines, "Dependencies", &snapshot.dependencies);
+    append_impact_section(&mut lines, "Dependents", &snapshot.dependents);
+    append_impact_section(&mut lines, "Impact", &snapshot.impact_entities);
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Impact Panel"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn append_impact_section(lines: &mut Vec<Line<'_>>, title: &str, entities: &[GraphEntityRef]) {
+    let reserve_overflow_row = entities.len() > PANEL_DISPLAY_CAP_DEFAULT;
+    let max_visible = if reserve_overflow_row {
+        PANEL_DISPLAY_CAP_DEFAULT.saturating_sub(1)
+    } else {
+        PANEL_DISPLAY_CAP_DEFAULT
+    };
+    let visible: Vec<&GraphEntityRef> = entities.iter().take(max_visible).collect();
+    let hidden = entities.len().saturating_sub(max_visible);
+    lines.push(Line::styled(
+        format!("{title} ({})", entities.len()),
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if visible.is_empty() {
+        lines.push(Line::styled(
+            "  (none)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        for entity in visible {
+            lines.push(Line::raw(format!(
+                "  {}:{}-{} {}",
+                entity.file, entity.lines[0], entity.lines[1], entity.name
+            )));
+        }
+    }
+    if hidden > 0 {
+        lines.push(Line::styled(
+            format!("  +{hidden} more"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    lines.push(Line::raw(""));
+}
+
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
         "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
@@ -299,7 +378,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc list, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, i panel, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -487,6 +566,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  Esc back to list"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
+        Line::from("  i toggle impact panel"),
         Line::from("  n/p next/previous hunk"),
         Line::from("  PageUp/PageDown scroll by page"),
         Line::from("  g/G jump top/bottom"),
@@ -1294,6 +1374,15 @@ mod tests {
         lines.join("\n")
     }
 
+    fn graph_ref(id: usize, prefix: &str) -> GraphEntityRef {
+        GraphEntityRef {
+            id: format!("{prefix}:{id}"),
+            name: format!("{prefix}_entity_{id}"),
+            file: format!("src/{prefix}_{id:02}.rs"),
+            lines: [id + 1, id + 2],
+        }
+    }
+
     #[test]
     fn format_column_truncates_utf8_safely() {
         let output = format_column(Some(1), "abc漢字def", 8);
@@ -1527,6 +1616,90 @@ mod tests {
         assert!(
             rendered.contains("e: entity"),
             "expected entity footer cell in rendered output, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_detail_mode_shows_locked_panel_summary_format() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.set_graph_snapshot(GraphImpactSnapshot {
+            graph_available: true,
+            reason: None,
+            dependencies: vec![graph_ref(1, "dep"), graph_ref(2, "dep")],
+            dependents: vec![graph_ref(3, "depby")],
+            impact_total: 7,
+            impact_cap: 10_000,
+            impact_truncated: false,
+            impact_entities: vec![],
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed in detail mode");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("deps:2 depBy:1 impact:7"),
+            "expected locked summary token in detail header, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_expanded_panel_shows_bounded_rows_with_overflow_indicator() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.set_graph_snapshot(GraphImpactSnapshot {
+            graph_available: true,
+            reason: None,
+            dependencies: (0..30).map(|index| graph_ref(index, "dep")).collect(),
+            dependents: vec![],
+            impact_total: 0,
+            impact_cap: 10_000,
+            impact_truncated: false,
+            impact_entities: vec![],
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(140, 90);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with expanded panel");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("+6 more"),
+            "expected overflow indicator for bounded panel rows, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_expanded_panel_shows_none_rows_when_graph_is_unavailable() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.set_graph_snapshot(GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            10_000,
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with unavailable graph panel");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("Dependencies (0)"),
+            "expected empty dependencies header, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("(none)"),
+            "expected empty placeholder rows, got:\n{rendered}"
         );
     }
 

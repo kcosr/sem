@@ -262,6 +262,9 @@ pub struct SnapshotSessionInput {
 pub struct HttpStateSnapshot {
     pub session: SessionSnapshot,
     pub selection: SelectionSnapshot,
+    pub graph: GraphSnapshot,
+    pub impact: ImpactSnapshot,
+    pub panel: PanelSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -302,9 +305,34 @@ pub struct SelectionUiSnapshot {
     pub anchors: [usize; 2],
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphSnapshot {
+    pub graph_available: bool,
+    pub reason: Option<GraphUnavailableReason>,
+    pub dependencies: Vec<GraphEntityRef>,
+    pub dependents: Vec<GraphEntityRef>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ImpactSnapshot {
+    pub total: usize,
+    pub cap: usize,
+    pub truncated: bool,
+    pub entities: Vec<GraphEntityRef>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PanelSnapshot {
+    pub expanded: bool,
+    pub summary: String,
+}
+
 pub fn build_state_snapshot(
     session: &SnapshotSessionInput,
     selection: SnapshotSelectionInput,
+    graph_impact: &GraphImpactSnapshot,
+    panel_expanded: bool,
 ) -> HttpStateSnapshot {
     HttpStateSnapshot {
         session: SessionSnapshot {
@@ -331,6 +359,22 @@ pub fn build_state_snapshot(
                 scroll: selection.ui.scroll,
                 anchors: selection.ui.anchors,
             },
+        },
+        graph: GraphSnapshot {
+            graph_available: graph_impact.graph_available,
+            reason: graph_impact.reason,
+            dependencies: graph_impact.dependencies.clone(),
+            dependents: graph_impact.dependents.clone(),
+        },
+        impact: ImpactSnapshot {
+            total: graph_impact.impact_total,
+            cap: graph_impact.impact_cap,
+            truncated: graph_impact.impact_truncated,
+            entities: graph_impact.impact_entities.clone(),
+        },
+        panel: PanelSnapshot {
+            expanded: panel_expanded,
+            summary: graph_impact.panel_summary(),
         },
     }
 }
@@ -557,6 +601,22 @@ fn fallback_state_snapshot() -> HttpStateSnapshot {
                 scroll: 0,
                 anchors: [0, 0],
             },
+        },
+        graph: GraphSnapshot {
+            graph_available: false,
+            reason: Some(GraphUnavailableReason::GraphBuildFailed),
+            dependencies: vec![],
+            dependents: vec![],
+        },
+        impact: ImpactSnapshot {
+            total: 0,
+            cap: IMPACT_RESPONSE_CAP_DEFAULT,
+            truncated: false,
+            entities: vec![],
+        },
+        panel: PanelSnapshot {
+            expanded: false,
+            summary: "deps:0 depBy:0 impact:0".to_string(),
         },
     }
 }
@@ -1005,18 +1065,68 @@ mod tests {
 
     #[test]
     fn build_state_snapshot_serializes_full_shape() {
-        let snapshot = build_state_snapshot(&sample_session(true, 7778, HttpSourceMode::Repository), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
 
         let value = serde_json::to_value(snapshot).expect("snapshot must serialize");
         assert!(value.get("session").is_some());
         assert!(value.get("selection").is_some());
-        assert!(value.get("graph").is_none());
-        assert!(value.get("impact").is_none());
-        assert!(value.get("panel").is_none());
+        assert!(value.get("graph").is_some());
+        assert!(value.get("impact").is_some());
+        assert!(value.get("panel").is_some());
+        assert_eq!(
+            value
+                .pointer("/graph/graphAvailable")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn build_state_snapshot_reflects_panel_expanded_flag() {
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let expanded_snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            true,
+        );
+        let collapsed_snapshot = build_state_snapshot(
+            &sample_session(true, 7778, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
+
+        assert!(expanded_snapshot.panel.expanded);
+        assert!(!collapsed_snapshot.panel.expanded);
+        assert_eq!(
+            expanded_snapshot.panel.summary,
+            "deps:0 depBy:0 impact:0".to_string()
+        );
+        assert_eq!(
+            expanded_snapshot.panel.summary,
+            collapsed_snapshot.panel.summary
+        );
     }
 
     #[test]
     fn build_state_snapshot_serializes_source_mode_tokens() {
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
         let cases = [
             (HttpSourceMode::Repository, "repository"),
             (HttpSourceMode::Stdin, "stdin"),
@@ -1024,8 +1134,12 @@ mod tests {
         ];
 
         for (source_mode, expected) in cases {
-            let snapshot =
-                build_state_snapshot(&sample_session(true, 7778, source_mode), sample_selection(false));
+            let snapshot = build_state_snapshot(
+                &sample_session(true, 7778, source_mode),
+                sample_selection(false),
+                &graph_snapshot,
+                false,
+            );
             let value = serde_json::to_value(snapshot).expect("snapshot must serialize");
             assert_eq!(
                 value
@@ -1038,8 +1152,16 @@ mod tests {
 
     #[test]
     fn http_server_returns_state_snapshot_for_get_state() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1051,17 +1173,25 @@ mod tests {
         assert_eq!(status, 200);
         assert!(payload.get("session").is_some());
         assert!(payload.get("selection").is_some());
-        assert!(payload.get("graph").is_none());
-        assert!(payload.get("impact").is_none());
-        assert!(payload.get("panel").is_none());
+        assert!(payload.get("graph").is_some());
+        assert!(payload.get("impact").is_some());
+        assert!(payload.get("panel").is_some());
 
         server.shutdown();
     }
 
     #[test]
     fn http_server_returns_updated_snapshot_after_replace() {
-        let initial_snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let initial_snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
         let state = shared_state(initial_snapshot);
         let mut server = HttpStateServer::start(true, 0, state.clone());
 
@@ -1076,8 +1206,12 @@ mod tests {
             Some(false)
         );
 
-        let updated_snapshot =
-            build_state_snapshot(&sample_session(true, server.port(), HttpSourceMode::Repository), sample_selection(true));
+        let updated_snapshot = build_state_snapshot(
+            &sample_session(true, server.port(), HttpSourceMode::Repository),
+            sample_selection(true),
+            &graph_snapshot,
+            false,
+        );
         replace_shared_snapshot(&state, updated_snapshot);
 
         let (_, after_payload) = send_http_request(
@@ -1102,8 +1236,16 @@ mod tests {
 
     #[test]
     fn http_server_returns_not_found_for_unknown_route() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Stdin), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::UnsupportedSourceMode,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Stdin),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1127,8 +1269,16 @@ mod tests {
 
     #[test]
     fn http_server_returns_method_not_allowed_for_non_get_state() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Stdin), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::UnsupportedSourceMode,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Stdin),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1150,8 +1300,16 @@ mod tests {
 
     #[test]
     fn http_server_sets_json_content_type_header() {
-        let snapshot =
-            build_state_snapshot(&sample_session(true, 0, HttpSourceMode::Repository), sample_selection(false));
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::SelectionNotResolvable,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
+        let snapshot = build_state_snapshot(
+            &sample_session(true, 0, HttpSourceMode::Repository),
+            sample_selection(false),
+            &graph_snapshot,
+            false,
+        );
         let state = shared_state(snapshot);
         let mut server = HttpStateServer::start(true, 0, state);
 
@@ -1180,9 +1338,15 @@ mod tests {
             .expect("listener should have local addr")
             .port();
 
+        let graph_snapshot = GraphImpactSnapshot::unavailable(
+            GraphUnavailableReason::UnsupportedSourceMode,
+            IMPACT_RESPONSE_CAP_DEFAULT,
+        );
         let snapshot = build_state_snapshot(
             &sample_session(true, occupied_port, HttpSourceMode::Stdin),
             sample_selection(false),
+            &graph_snapshot,
+            false,
         );
         let state = shared_state(snapshot);
 
