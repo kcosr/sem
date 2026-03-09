@@ -27,9 +27,8 @@ use crate::commands::diff::{
 };
 use app::PendingNavigationRequest;
 use http_state::{
-    build_state_snapshot, replace_shared_snapshot, shared_state, GraphSelection,
-    GraphSnapshotService, HttpSourceMode, HttpStateServer, SnapshotSelectionInput,
-    SnapshotSessionInput, SnapshotUiInput,
+    build_state_snapshot, replace_shared_snapshot, shared_state, HttpSourceMode, HttpStateServer,
+    SnapshotSelectionInput, SnapshotSessionInput, SnapshotUiInput,
 };
 use review_state::ReviewStateStoreInit;
 
@@ -93,11 +92,6 @@ pub fn run_tui(
         mode,
         base_endpoint_id,
     );
-    let graph_snapshot_service = GraphSnapshotService::new(
-        &runtime_options.cwd,
-        &runtime_options.file_exts,
-        runtime_options.source_mode,
-    );
     let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let initial_session = SnapshotSessionInput {
         http_enabled: runtime_options.http_enabled,
@@ -107,8 +101,7 @@ pub fn run_tui(
         source_mode: runtime_options.source_mode,
         started_at: started_at.clone(),
     };
-    let initial_snapshot =
-        snapshot_for_http_state(&mut app_state, &graph_snapshot_service, &initial_session);
+    let initial_snapshot = snapshot_for_http_state(&app_state, &initial_session);
     let shared_http_state = shared_state(initial_snapshot);
     let mut http_server = HttpStateServer::start(
         runtime_options.http_enabled,
@@ -130,12 +123,7 @@ pub fn run_tui(
             )));
         }
     }
-    sync_http_state(
-        &mut app_state,
-        &graph_snapshot_service,
-        &session,
-        &shared_http_state,
-    );
+    sync_http_state(&app_state, &session, &shared_http_state);
     let review_cwd = context.cwd.clone();
     let mut reload_coordinator = ReloadCoordinator::new(context);
     let review_store = match review_state::ReviewStateStore::initialize(&review_cwd) {
@@ -242,12 +230,7 @@ pub fn run_tui(
             }
         }
 
-        sync_http_state(
-            &mut app_state,
-            &graph_snapshot_service,
-            &session,
-            &shared_http_state,
-        );
+        sync_http_state(&app_state, &session, &shared_http_state);
     }
 
     if let Some(snapshot) = app_state.take_review_state_dirty_snapshot() {
@@ -268,34 +251,23 @@ pub fn run_tui(
 }
 
 fn snapshot_for_http_state(
-    app_state: &mut app::AppState,
-    graph_snapshot_service: &GraphSnapshotService,
+    app_state: &app::AppState,
     session: &SnapshotSessionInput,
 ) -> http_state::HttpStateSnapshot {
-    let (selection, graph_selection) = snapshot_inputs_from_app_state(app_state);
-    let graph_impact = graph_snapshot_service.snapshot_for_selection(graph_selection.as_ref());
-    app_state.set_graph_snapshot(graph_impact.clone());
-    build_state_snapshot(
-        session,
-        selection,
-        &graph_impact,
-        app_state.impact_panel_expanded(),
-    )
+    let selection = snapshot_inputs_from_app_state(app_state);
+    build_state_snapshot(session, selection)
 }
 
 fn sync_http_state(
-    app_state: &mut app::AppState,
-    graph_snapshot_service: &GraphSnapshotService,
+    app_state: &app::AppState,
     session: &SnapshotSessionInput,
     shared_http_state: &http_state::SharedHttpState,
 ) {
-    let snapshot = snapshot_for_http_state(app_state, graph_snapshot_service, session);
+    let snapshot = snapshot_for_http_state(app_state, session);
     replace_shared_snapshot(shared_http_state, snapshot);
 }
 
-fn snapshot_inputs_from_app_state(
-    app_state: &app::AppState,
-) -> (SnapshotSelectionInput, Option<GraphSelection>) {
+fn snapshot_inputs_from_app_state(app_state: &app::AppState) -> SnapshotSelectionInput {
     let ui = SnapshotUiInput {
         mode: mode_token(app_state.mode()).to_string(),
         view: view_token(app_state.effective_view()).to_string(),
@@ -306,39 +278,25 @@ fn snapshot_inputs_from_app_state(
     };
 
     let Some(row) = app_state.selected_row() else {
-        return (
-            SnapshotSelectionInput {
-                selected: false,
-                file: None,
-                entity_type: None,
-                entity_name: None,
-                line_range: None,
-                ui,
-            },
-            None,
-        );
+        return SnapshotSelectionInput {
+            selected: false,
+            file: None,
+            entity_type: None,
+            entity_name: None,
+            line_range: None,
+            ui,
+        };
     };
 
     let line_range = row_line_range(row);
-    let graph_id = (!row.change.entity_id.is_empty()).then(|| row.change.entity_id.clone());
-
-    (
-        SnapshotSelectionInput {
-            selected: true,
-            file: Some(row.file_path.clone()),
-            entity_type: Some(row.entity_type.clone()),
-            entity_name: Some(row.entity_name.clone()),
-            line_range,
-            ui,
-        },
-        Some(GraphSelection {
-            graph_id,
-            file: row.file_path.clone(),
-            entity_type: row.entity_type.clone(),
-            entity_name: row.entity_name.clone(),
-            line_range,
-        }),
-    )
+    SnapshotSelectionInput {
+        selected: true,
+        file: Some(row.file_path.clone()),
+        entity_type: Some(row.entity_type.clone()),
+        entity_name: Some(row.entity_name.clone()),
+        line_range,
+        ui,
+    }
 }
 
 fn row_line_range(row: &app::EntityRow) -> Option<[usize; 2]> {
@@ -478,7 +436,7 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::http_state::{GraphSnapshotService, HttpSourceMode, SnapshotSessionInput};
+    use super::http_state::{HttpSourceMode, SnapshotSessionInput};
     use super::{snapshot_for_http_state, ReloadCoordinator, WorkerRequest};
     use crate::commands::diff::{
         CommitLoadStatus, CommitNavigationContext, CommitStepAction, CommitStepRequest, DiffView,
@@ -570,10 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_tracks_panel_expanded_across_list_detail_transitions() {
+    fn snapshot_tracks_selection_mode_across_list_detail_transitions() {
         let mut app = super::app::AppState::from_diff_result(&sample_result(), DiffView::Unified);
-        let graph_service =
-            GraphSnapshotService::with_caps(".", &[], HttpSourceMode::Stdin, 10_000);
         let session = SnapshotSessionInput {
             http_enabled: true,
             http_bound: true,
@@ -583,20 +539,16 @@ mod tests {
             started_at: "2026-03-08T21:00:00Z".to_string(),
         };
 
-        let list_snapshot = snapshot_for_http_state(&mut app, &graph_service, &session);
+        let list_snapshot = snapshot_for_http_state(&app, &session);
         assert_eq!(list_snapshot.selection.ui.mode, "list");
-        assert!(!list_snapshot.panel.expanded);
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        let detail_snapshot = snapshot_for_http_state(&mut app, &graph_service, &session);
+        let detail_snapshot = snapshot_for_http_state(&app, &session);
         assert_eq!(detail_snapshot.selection.ui.mode, "detail");
-        assert!(detail_snapshot.panel.expanded);
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        let list_after_close = snapshot_for_http_state(&mut app, &graph_service, &session);
+        let list_after_close = snapshot_for_http_state(&app, &session);
         assert_eq!(list_after_close.selection.ui.mode, "list");
-        assert!(!list_after_close.panel.expanded);
     }
 
     fn wait_for_response(

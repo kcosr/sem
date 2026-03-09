@@ -19,7 +19,6 @@
 - Local review-state persistence at `.sem/tui-review-state.json` with per-repo filter preference and reviewed carryover based on identity + target hash.
 - Diff TUI entity-context toggle: `e` switches detail rendering between `hunk` context and full `entity` context.
 - Diff TUI optional local HTTP state endpoint (`--tui-http`, `--tui-http-port`, default `127.0.0.1:7778`) with deterministic `GET /state` / `404` / `405` JSON semantics.
-- Diff TUI impact summary + expandable detail panel (`i` in detail mode) with bounded dependency/dependent/impact sections and overflow indicators.
 
 ### Changed
 - `sem-core` `SemanticChange` now includes optional line-range metadata:
@@ -35,7 +34,6 @@
 - TUI list/detail footer cells now include entity-context state (`e: <hunk|entity>`) with shared `m | r | e` ordering.
 - TUI detail rendering now supports full-entity mode changed-region anchors for deterministic `n/p` traversal in unified and side-by-side views.
 - Filtered TUI list rendering now hides file headers with zero visible entities and shows an explicit no-match row when filter output is empty.
-- Diff TUI `/state` payload now tracks panel expansion state and compact impact summary across list/detail transitions.
 
 ### Testing
 - Added sem-core tests for line-range population and serialization behavior.
@@ -44,4 +42,3 @@
 - Added sem-cli unified-stepping tests for mode comparator selection, startup defaults/`--step-mode` (explicit range, commit, staged, and implicit/latest), pseudo-endpoint range bootstrap, startup refresh loading, JSON range compatibility for `HEAD..WORKING`, and `INDEX`/`WORKING` empty<->populated transition hardening.
 - Added sem-cli review-state coverage for filtered navigation/no-match rendering, detail-mode review toggle/filter behavior, reviewed marker rendering, file-header suppression under filters, and carryover/non-carryover behavior across snapshot reloads.
 - Added sem-cli H3 hardening coverage for entity-context mode: identical-content empty-anchor boundary no-op behavior, non-zero index/scroll reset on `e` toggles, and footer/help render assertions for `e: hunk|entity`.
-- Added sem-cli H4 hardening coverage for HTTP impact state: truncation semantics, zero-impact snapshots, bind-failure continuation, method-mismatch handling, panel state transition sync, and expanded-panel render bounds/empty-state behavior.

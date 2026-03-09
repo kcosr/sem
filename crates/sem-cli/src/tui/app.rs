@@ -556,7 +556,6 @@ impl AppState {
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
             KeyCode::Tab => self.toggle_view(),
-            KeyCode::Char('i') => self.toggle_impact_panel(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
             KeyCode::PageDown => self.scroll_page_down(),
@@ -641,12 +640,7 @@ impl AppState {
         self.mode = Mode::List;
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
-        self.impact_panel_expanded = false;
         self.detail = None;
-    }
-
-    fn toggle_impact_panel(&mut self) {
-        self.impact_panel_expanded = !self.impact_panel_expanded;
     }
 
     fn toggle_view(&mut self) {
@@ -1106,41 +1100,12 @@ mod tests {
     }
 
     #[test]
-    fn i_key_toggles_panel_in_detail_mode_and_resets_on_exit() {
+    fn i_key_is_noop_in_detail_mode() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.impact_panel_expanded());
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.impact_panel_expanded());
-
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(!app.impact_panel_expanded());
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.impact_panel_expanded());
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.mode(), Mode::List);
-        assert!(!app.impact_panel_expanded());
-    }
-
-    #[test]
-    fn expanded_panel_persists_while_navigating_in_detail_mode() {
-        let mut app = app();
-        app.set_viewport(120, 12);
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.impact_panel_expanded());
-
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.impact_panel_expanded());
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert!(app.impact_panel_expanded());
-
-        let before_hunk = app.detail_hunk_index();
-        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-        assert!(app.detail_hunk_index() >= before_hunk);
-        assert!(app.impact_panel_expanded());
     }
 
     #[test]
