@@ -74,6 +74,7 @@ struct FooterParts {
 pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
     match app.mode() {
         Mode::List => draw_list(frame, app),
+        Mode::Split => draw_list(frame, app),
         Mode::Detail => draw_detail(frame, app),
     }
 

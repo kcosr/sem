@@ -31,6 +31,7 @@ pub struct EntityRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     List,
+    Split,
     Detail,
 }
 
@@ -39,6 +40,7 @@ pub struct AppState {
     rows: Vec<EntityRow>,
     selected: usize,
     mode: Mode,
+    last_non_detail_mode: Mode,
     requested_view: DiffView,
     entity_context_mode: EntityContextMode,
     detail_scroll: usize,
@@ -80,6 +82,7 @@ impl AppState {
             rows,
             selected: 0,
             mode: Mode::List,
+            last_non_detail_mode: Mode::List,
             requested_view: initial_view,
             entity_context_mode: EntityContextMode::Hunk,
             detail_scroll: 0,
@@ -476,13 +479,45 @@ impl AppState {
             return;
         }
 
+        if key.code == KeyCode::Char('v') {
+            self.cycle_view_mode();
+            return;
+        }
+
         match self.mode {
             Mode::List => self.handle_list_key(key),
+            Mode::Split => self.handle_split_key(key),
             Mode::Detail => self.handle_detail_key(key),
         }
     }
 
     fn handle_list_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
+            KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
+            KeyCode::Char('m') => self.toggle_step_mode(),
+            KeyCode::Char('e') => self.toggle_entity_context_mode(),
+            KeyCode::Char(' ') => {
+                let _ = self.toggle_selected_reviewed();
+            }
+            KeyCode::Char('r') => self.cycle_review_filter(),
+            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
+            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('G') => {
+                let visible_len = self.visible_row_indices().len();
+                if visible_len > 0 {
+                    self.selected = visible_len - 1;
+                }
+            }
+            KeyCode::Enter => self.open_detail(),
+            _ => {}
+        }
+    }
+
+    fn handle_split_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
@@ -538,6 +573,30 @@ impl AppState {
         }
     }
 
+    fn cycle_view_mode(&mut self) {
+        match self.mode {
+            Mode::List => {
+                self.mode = Mode::Split;
+                self.last_non_detail_mode = Mode::Split;
+                self.detail_scroll = 0;
+                self.detail_hunk_index = 0;
+                self.detail = None;
+            }
+            Mode::Split => {
+                self.last_non_detail_mode = Mode::Split;
+                self.mode = Mode::Detail;
+                self.refresh_detail();
+            }
+            Mode::Detail => {
+                self.mode = Mode::List;
+                self.last_non_detail_mode = Mode::List;
+                self.detail_scroll = 0;
+                self.detail_hunk_index = 0;
+                self.detail = None;
+            }
+        }
+    }
+
     fn move_up(&mut self) {
         let visible_len = self.visible_row_indices().len();
         if visible_len == 0 {
@@ -564,6 +623,7 @@ impl AppState {
         if self.visible_row_indices().is_empty() {
             return;
         }
+        self.last_non_detail_mode = self.current_non_detail_mode();
         self.mode = Mode::Detail;
         self.refresh_detail();
     }
@@ -605,7 +665,7 @@ impl AppState {
     }
 
     fn close_detail(&mut self) {
-        self.mode = Mode::List;
+        self.mode = self.last_non_detail_mode;
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
         self.detail = None;
@@ -839,6 +899,14 @@ impl AppState {
             crate::commands::diff::StepEndpointKind::Working => Some("WORKING".to_string()),
         }
     }
+
+    fn current_non_detail_mode(&self) -> Mode {
+        match self.mode {
+            Mode::List => Mode::List,
+            Mode::Split => Mode::Split,
+            Mode::Detail => Mode::List,
+        }
+    }
 }
 
 fn range_label(change: &SemanticChange) -> Option<String> {
@@ -1057,6 +1125,68 @@ mod tests {
         assert_eq!(app.mode(), Mode::Detail);
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn v_key_cycles_modes_with_wrap() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn enter_from_split_opens_detail_and_escape_returns_to_split() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+    }
+
+    #[test]
+    fn detail_v_cycle_wrap_returns_to_list() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+    }
+
+    #[test]
+    fn escape_from_detail_entered_via_v_cycle_returns_to_split() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+    }
+
+    #[test]
+    fn escape_in_split_mode_is_noop() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
     }
 
     #[test]
