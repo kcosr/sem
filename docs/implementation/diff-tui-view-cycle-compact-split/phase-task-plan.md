@@ -213,6 +213,19 @@ Gate:
 - Notes:
   - both runs completed via stream terminal event `result.completed`; no fallback retry needed.
 
+### 9.4 H0 Evidence
+- Completion date: 2026-03-10
+- Commit hash(es): `b83d726`
+- Acceptance evidence:
+  - manual: design/schema/plan consistency pass completed after clarifying split preview-state semantics, split no-op key semantics, and fallback notice behavior.
+  - manual: H0 contract deliverables locked across `design.md`, `schema-proposal.md`, and verification matrix additions in `phase-task-plan.md`.
+- Review run IDs + triage outcomes:
+  - `r_20260310022103762_522eb9e1`: `accept` clarity additions for split preview-scrolling boundary + fallback notice placement; `defer` performance/layout-thrash mitigation to post-baseline optimization scope.
+  - `r_20260310022150794_eda06e4d`: `accept` split key-contract clarifications (`Tab` preview-only, `n/p` + paging no-op in split), preview-state contract, and matrix expansion; `defer` footer-width stress/perf-hardening guidance to later phase; `reject` schema token-mismatch concern (`e: hunk`) as not a contract defect.
+- Go/No-Go: GO
+- Notes:
+  - both execution-stage review runs were closed only after stream terminal event `result.completed`.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-view-cycle-compact-split/schema-proposal.md`
