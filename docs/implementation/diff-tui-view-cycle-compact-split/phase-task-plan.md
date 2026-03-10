@@ -257,6 +257,23 @@ Gate:
 - Notes:
   - both reviewer runs were closed from stream terminal event `result.completed`.
 
+### 9.7 H3 Evidence
+- Completion date: 2026-03-10
+- Commit hash(es): `8763fbd`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` (run from `crates/`) => pass, 144 passed / 0 failed after footer/help/docs updates and added H3 hardening tests.
+  - `cargo test -p sem-core` (run from `crates/`) => pass, 41 passed / 0 failed.
+  - `npm run lint` => fail (environment baseline: unresolved Node/TS modules and missing ambient node types in current workspace runtime).
+  - `npm test` => fail (`vitest: command not found` in current environment baseline).
+  - manual: footer rail now renders locked `m | r | e | v` with `v: list|split|detail`; controls/help text documents global `v` cycle and split-mode guidance; README/crates README/CHANGELOG updated to stabilized behavior.
+  - manual: hardening coverage includes split selection-preview sync, split filter fallback retargeting, explicit cycle round-trip (`List -> Enter -> Detail -> v -> List -> v -> Split`), and split side-by-side narrow fallback behavior.
+- Review run IDs + triage outcomes:
+  - `r_20260310025156512_f93a3e30`: `accept` missing Section 9 H3 evidence requirement; evidence entry added and completed.
+  - `r_20260310025346447_09b48d4d`: `accept` minor matrix-coverage hardening additions (split help-overlay assertion, explicit cycle round-trip assertion, narrow four-cell footer width arbitration assertion); `reject` stale-history interpretation that H3 was already complete/no-op in this execution stream.
+- Go/No-Go: GO
+- Notes:
+  - both reviewer runs were closed only after stream terminal event `result.completed`.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-view-cycle-compact-split/schema-proposal.md`
