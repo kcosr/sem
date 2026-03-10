@@ -226,6 +226,21 @@ Gate:
 - Notes:
   - both execution-stage review runs were closed only after stream terminal event `result.completed`.
 
+### 9.5 H1 Evidence
+- Completion date: 2026-03-10
+- Commit hash(es): `c5b406d`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` (run from `crates/`) => pass, 126 passed / 0 failed; includes new mode-cycle and escape-path assertions.
+  - `npm run lint` => fail (environment baseline: missing Node/TS dependency resolution in workspace; unrelated to Rust TUI scope).
+  - `npm test` => fail (`vitest: command not found` in current environment baseline).
+  - manual: `Mode::Split` added, global `v` cycle wired (`list -> split -> detail -> list`), `Enter` works from list/split, `Esc` in detail returns recorded prior non-detail mode.
+- Review run IDs + triage outcomes:
+  - `r_20260310023037903_6645bc0f`: `accept` baseline transition implementation and test scope; `defer` duplicate list/split key-handler cleanup to later hardening.
+  - `r_20260310023214886_456dd586`: `accept` additional transition coverage (`escape_from_detail_entered_via_v_cycle_returns_to_split`, `escape_in_split_mode_is_noop`); `defer` split rendering/help-copy items to H2/H3 where they are in scope; `reject` claims conflicting with locked H1 scope (`Split` visual parity with `List` in H1, `Esc` in split requiring mode change).
+- Go/No-Go: GO
+- Notes:
+  - both reviewer runs were completed via stream terminal event `result.completed`.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-view-cycle-compact-split/schema-proposal.md`
