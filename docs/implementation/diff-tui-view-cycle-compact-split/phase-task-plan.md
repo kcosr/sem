@@ -241,6 +241,22 @@ Gate:
 - Notes:
   - both reviewer runs were completed via stream terminal event `result.completed`.
 
+### 9.6 H2 Evidence
+- Completion date: 2026-03-10
+- Commit hash(es): `0994ad8`
+- Acceptance evidence:
+  - `cargo test -p sem-cli` (run from `crates/`) => pass, 138 passed / 0 failed after split renderer + app key routing updates.
+  - `npm run lint` => fail (environment baseline: unresolved Node/TS modules and missing ambient node types in current workspace runtime).
+  - `npm test` => fail (`vitest: command not found` in current environment baseline).
+  - manual: `Mode::Split` render path now draws compact split layout with file-grouped sidebar, dense rows (marker/change icon + type icon + name + inline delta), right-pane live preview, and narrow-width list-only fallback notice.
+  - manual: split `Tab` toggles preview diff view without mutating detail hunk/scroll cursor state.
+- Review run IDs + triage outcomes:
+  - `r_20260310024023052_9feda787`: `accept` renderer/app coverage gap closure for split no-op keys and split-specific rendering assertions; `defer` preview caching/debouncing optimization to post-baseline hardening.
+  - `r_20260310024107948_1ecb53c1`: `accept` additional split tests (side-by-side stability, empty/no-match states, split footer notice path, width clamp checks) and split preview title identity improvement; `defer` help-overlay split/v documentation to H3 scope; `reject` split-preview scroll requirement as out-of-scope for locked passive-preview contract in H2.
+- Go/No-Go: GO
+- Notes:
+  - both reviewer runs were closed from stream terminal event `result.completed`.
+
 ## 10. Execution Handoff Contract
 1. Required read order:
    1) `docs/implementation/diff-tui-view-cycle-compact-split/schema-proposal.md`
