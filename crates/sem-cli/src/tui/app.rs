@@ -531,6 +531,7 @@ impl AppState {
             KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
+            KeyCode::Tab => self.toggle_view(),
             KeyCode::Char('g') => self.selected = 0,
             KeyCode::Char('G') => {
                 let visible_len = self.visible_row_indices().len();
@@ -677,8 +678,10 @@ impl AppState {
             DiffView::SideBySide => DiffView::Unified,
         };
 
-        self.detail_hunk_index = 0;
-        self.jump_to_hunk();
+        if self.mode == Mode::Detail {
+            self.detail_hunk_index = 0;
+            self.jump_to_hunk();
+        }
     }
 
     fn toggle_entity_context_mode(&mut self) {
@@ -1419,6 +1422,69 @@ mod tests {
         assert_eq!(app.effective_view(), DiffView::SideBySide);
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::Unified);
+    }
+
+    #[test]
+    fn tab_toggles_requested_view_in_split_mode_without_mutating_detail_cursor_state() {
+        let mut app = app();
+        app.set_viewport(200, 40);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.detail_scroll = 7;
+        app.detail_hunk_index = 2;
+        assert_eq!(app.effective_view(), DiffView::Unified);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::SideBySide);
+        assert_eq!(app.detail_scroll(), 7);
+        assert_eq!(app.detail_hunk_index(), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.effective_view(), DiffView::Unified);
+        assert_eq!(app.detail_scroll(), 7);
+        assert_eq!(app.detail_hunk_index(), 2);
+    }
+
+    #[test]
+    fn split_mode_hunk_and_paging_keys_are_noop() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.detail_scroll = 5;
+        app.detail_hunk_index = 3;
+        let baseline_selected = app.selected();
+
+        for key in [
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        ] {
+            app.handle_key(key);
+            assert_eq!(app.mode(), Mode::Split);
+            assert_eq!(app.selected(), baseline_selected);
+            assert_eq!(app.detail_scroll(), 5);
+            assert_eq!(app.detail_hunk_index(), 3);
+        }
+    }
+
+    #[test]
+    fn e_key_toggles_entity_context_mode_in_split_mode() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
+        assert_eq!(app.mode(), Mode::Split);
     }
 
     #[test]

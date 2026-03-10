@@ -31,6 +31,10 @@ const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
 const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
 const DIFF_HUNK_FG: Color = Color::Gray;
 const FOOTER_CELL_SEPARATOR: &str = " | ";
+const SPLIT_LEFT_RATIO_PERCENT: u16 = 30;
+const SPLIT_LEFT_MIN_COLS: u16 = 28;
+const SPLIT_RIGHT_MIN_COLS: u16 = 52;
+const SPLIT_NARROW_NOTICE: &str = "Split preview hidden: terminal too narrow";
 
 #[derive(Clone, Copy, Debug)]
 struct ListColumnWidths {
@@ -74,7 +78,7 @@ struct FooterParts {
 pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
     match app.mode() {
         Mode::List => draw_list(frame, app),
-        Mode::Split => draw_list(frame, app),
+        Mode::Split => draw_split(frame, app),
         Mode::Detail => draw_detail(frame, app),
     }
 
@@ -152,19 +156,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
             } else {
                 " "
             };
-            let (icon, tag, style) = match row.change.change_type {
-                ChangeType::Added => ("⊕", "[added]", Style::default().fg(Color::Green)),
-                ChangeType::Modified => {
-                    if row.change.structural_change == Some(false) {
-                        ("~", "[cosmetic]", Style::default().fg(Color::DarkGray))
-                    } else {
-                        ("∆", "[modified]", Style::default().fg(Color::Yellow))
-                    }
-                }
-                ChangeType::Deleted => ("⊖", "[deleted]", Style::default().fg(Color::Red)),
-                ChangeType::Moved => ("→", "[moved]", Style::default().fg(Color::Blue)),
-                ChangeType::Renamed => ("↻", "[renamed]", Style::default().fg(Color::Cyan)),
-            };
+            let (icon, tag, style) =
+                change_visuals(row.change.change_type, row.change.structural_change);
 
             let spans = vec![
                 Span::styled(format!("{marker}{icon}"), style),
@@ -277,6 +270,226 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
     draw_footer(frame, chunks[2], &footer);
 }
 
+fn draw_split(frame: &mut Frame<'_>, app: &AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(frame.area());
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                context_header_line(app, chunks[0].width),
+                Style::default().fg(Color::LightCyan),
+            ),
+            Line::raw(""),
+            Line::styled(
+                "Split: compact entities + live diff preview",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        chunks[0],
+    );
+
+    let split_body = chunks[1];
+    let split_min_width = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
+    if split_body.width < split_min_width {
+        draw_split_sidebar(frame, split_body, app, Some(SPLIT_NARROW_NOTICE));
+        let footer = split_footer_parts(app, Some(SPLIT_NARROW_NOTICE));
+        draw_footer(frame, chunks[2], &footer);
+        return;
+    }
+
+    let split_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(split_left_width(split_body.width)),
+            Constraint::Min(SPLIT_RIGHT_MIN_COLS),
+        ])
+        .split(split_body);
+
+    draw_split_sidebar(frame, split_chunks[0], app, None);
+    draw_split_preview(frame, split_chunks[1], app);
+
+    let footer = split_footer_parts(app, None);
+    draw_footer(frame, chunks[2], &footer);
+}
+
+fn split_left_width(total_width: u16) -> u16 {
+    let minimum_total = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
+    if total_width <= minimum_total {
+        return SPLIT_LEFT_MIN_COLS;
+    }
+
+    let target =
+        ((u32::from(total_width) * u32::from(SPLIT_LEFT_RATIO_PERCENT)) / 100).max(u32::from(SPLIT_LEFT_MIN_COLS));
+    let max_left = total_width.saturating_sub(SPLIT_RIGHT_MIN_COLS);
+    let bounded = target.min(u32::from(max_left));
+    bounded as u16
+}
+
+fn draw_split_sidebar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &AppState,
+    notice: Option<&str>,
+) {
+    let mut items: Vec<ListItem<'_>> = Vec::new();
+    let mut selectable_indices: Vec<usize> = Vec::new();
+    let mut current_file: Option<&str> = None;
+    let visible_indices = app.visible_row_indices();
+    let content_width = usize::from(area.width.saturating_sub(4)).max(1);
+    let delta_col = 9usize.min(content_width.saturating_sub(1)).max(1);
+    let marker_col = 2usize;
+    let entity_icon_col = 2usize;
+    let spacing = 3usize;
+    let entity_col = content_width
+        .saturating_sub(marker_col + entity_icon_col + delta_col + spacing)
+        .max(1);
+
+    if let Some(message) = notice {
+        items.push(ListItem::new(Line::styled(
+            fit_cell(message, content_width),
+            Style::default().fg(Color::Yellow),
+        )));
+        items.push(ListItem::new(Line::raw("")));
+    }
+
+    if visible_indices.is_empty() {
+        items.push(ListItem::new(Line::styled(
+            fit_cell(
+                &format!("No entities match filter ({})", app.review_filter().as_token()),
+                content_width,
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for row_index in visible_indices {
+            let Some(row) = app.rows().get(row_index) else {
+                continue;
+            };
+            if current_file != Some(row.file_path.as_str()) {
+                if !items.is_empty() {
+                    items.push(ListItem::new(Line::raw("")));
+                }
+                current_file = Some(row.file_path.as_str());
+                items.push(ListItem::new(Line::styled(
+                    fit_cell(&row.file_path, content_width),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+
+            let entity_index = selectable_indices.len();
+            let marker = if entity_index == app.selected() {
+                "▶"
+            } else if app.is_row_reviewed(row_index) {
+                "✓"
+            } else {
+                " "
+            };
+            let (change_icon, _, change_style) =
+                change_visuals(row.change.change_type, row.change.structural_change);
+
+            let mut spans = vec![
+                Span::styled(format!("{marker}{change_icon}"), change_style),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:<2}", entity_type_icon(&row.entity_type)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    fit_cell(&row.entity_name, entity_col),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+            ];
+            append_delta_spans(
+                &mut spans,
+                row.added_lines,
+                row.removed_lines,
+                delta_col,
+            );
+
+            selectable_indices.push(items.len());
+            items.push(ListItem::new(Line::from(spans)));
+        }
+    }
+
+    let list = List::new(items)
+        .block(Block::default().title("Entities (Split)").borders(Borders::ALL))
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
+    let mut state = ListState::default();
+    let selected = app
+        .selected()
+        .min(selectable_indices.len().saturating_sub(1));
+    state.select(selectable_indices.get(selected).copied());
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let Some(row) = app.selected_row() else {
+        frame.render_widget(
+            Paragraph::new("No entity selected")
+                .block(Block::default().borders(Borders::ALL).title("Diff Preview")),
+            area,
+        );
+        return;
+    };
+
+    let rendered = super::detail::render_change(&row.change, app.entity_context_mode());
+    let content_height = usize::from(area.height.saturating_sub(2)).max(1);
+    let selected_file_path = Some(row.file_path.as_str());
+    let title = fit_cell(
+        &format!("Diff {} ({})", row.entity_name, row.file_path),
+        48,
+    );
+
+    match app.effective_view() {
+        DiffView::Unified => {
+            let rows = build_unified_render_rows(&rendered.unified_lines);
+            let number_width = line_number_width(
+                rows.iter()
+                    .flat_map(|preview| [preview.old_number, preview.new_number])
+                    .flatten()
+                    .max(),
+            );
+            let end = content_height.min(rows.len());
+            let lines: Vec<Line<'_>> = rows[..end]
+                .iter()
+                .map(|preview| render_unified_row(preview, number_width, selected_file_path))
+                .collect();
+
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(Block::default().borders(Borders::ALL).title(title))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+        }
+        DiffView::SideBySide => {
+            let line_width = area.width.saturating_sub(6) as usize;
+            let half = (line_width / 2).max(20);
+            let end = content_height.min(rendered.side_by_side_lines.len());
+            let lines: Vec<Line<'_>> = rendered.side_by_side_lines[..end]
+                .iter()
+                .map(|preview| render_side_by_side_row(preview, half, selected_file_path))
+                .collect();
+
+            frame.render_widget(
+                Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+                area,
+            );
+        }
+    }
+}
+
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
         "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
@@ -292,6 +505,27 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
             FooterCell::new('e', app.entity_context_mode().as_token()),
         ],
         status: footer_status_message(app.commit_loading(), app.status_message()),
+    }
+}
+
+fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterParts {
+    let mut controls =
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, Tab view, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+    if !app.commit_navigation_enabled() {
+        controls.push_str(" | stepping disabled");
+    }
+
+    let status = footer_status_message(app.commit_loading(), app.status_message())
+        .or_else(|| narrow_notice.map(ToString::to_string));
+
+    FooterParts {
+        controls,
+        cells: vec![
+            FooterCell::new('m', app.step_mode().as_token()),
+            FooterCell::new('r', app.review_filter().as_token()),
+            FooterCell::new('e', app.entity_context_mode().as_token()),
+        ],
+        status,
     }
 }
 
@@ -497,6 +731,39 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         .block(Block::default().title("Help").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, popup);
+}
+
+fn change_visuals(
+    change_type: ChangeType,
+    structural_change: Option<bool>,
+) -> (&'static str, &'static str, Style) {
+    match change_type {
+        ChangeType::Added => ("⊕", "[added]", Style::default().fg(Color::Green)),
+        ChangeType::Modified => {
+            if structural_change == Some(false) {
+                ("~", "[cosmetic]", Style::default().fg(Color::DarkGray))
+            } else {
+                ("∆", "[modified]", Style::default().fg(Color::Yellow))
+            }
+        }
+        ChangeType::Deleted => ("⊖", "[deleted]", Style::default().fg(Color::Red)),
+        ChangeType::Moved => ("→", "[moved]", Style::default().fg(Color::Blue)),
+        ChangeType::Renamed => ("↻", "[renamed]", Style::default().fg(Color::Cyan)),
+    }
+}
+
+fn entity_type_icon(entity_type: &str) -> char {
+    match entity_type.to_ascii_lowercase().as_str() {
+        "function" | "fn" | "method" => 'ƒ',
+        "class" => 'C',
+        "struct" => 'S',
+        "enum" => 'E',
+        "interface" => 'I',
+        "module" | "namespace" => 'M',
+        "const" | "constant" => 'K',
+        "field" | "variable" | "var" => 'v',
+        _ => '•',
+    }
 }
 
 fn format_column(number: Option<usize>, text: &str, width: usize) -> String {
@@ -1240,6 +1507,50 @@ mod tests {
         }
     }
 
+    fn sample_result_long_names() -> DiffResult {
+        DiffResult {
+            changes: vec![SemanticChange {
+                id: "long".to_string(),
+                entity_id: "very::long::entity".to_string(),
+                change_type: ChangeType::Modified,
+                entity_type: "function".to_string(),
+                entity_name: "extremely_long_entity_name_that_should_truncate_in_split".to_string(),
+                file_path:
+                    "src/very/long/path/that/should/truncate/in/split/view/rendering_case.rs"
+                        .to_string(),
+                old_file_path: None,
+                before_content: Some("before\nline\n".to_string()),
+                after_content: Some("after\nline changed\n".to_string()),
+                commit_sha: None,
+                author: None,
+                timestamp: None,
+                structural_change: Some(true),
+                before_start_line: Some(1),
+                before_end_line: Some(2),
+                after_start_line: Some(1),
+                after_end_line: Some(2),
+            }],
+            file_count: 1,
+            added_count: 0,
+            modified_count: 1,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        }
+    }
+
+    fn sample_result_empty() -> DiffResult {
+        DiffResult {
+            changes: vec![],
+            file_count: 0,
+            added_count: 0,
+            modified_count: 0,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        }
+    }
+
     fn configure_commit_navigation(app: &mut AppState) {
         let endpoints = vec![
             StepEndpoint {
@@ -1348,6 +1659,163 @@ mod tests {
         assert!(
             rendered.contains("e toggle hunk/entity context"),
             "expected help overlay toggle line in detail mode, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_renders_compact_sidebar_without_verbose_columns() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed in split mode");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("Entities (Split)"),
+            "expected split sidebar block title, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Diff x"),
+            "expected split preview title for selected entity, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("[modified]"),
+            "expected compact split rows without verbose change tag, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Type"),
+            "expected compact split rows without list type column header, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_preview_updates_with_selection() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed for first split selection");
+        let first = terminal_buffer_text(&terminal);
+        assert!(
+            first.contains("Diff x"),
+            "expected initial split preview to target first entity, got:\n{first}"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed for second split selection");
+        let second = terminal_buffer_text(&terminal);
+        assert!(
+            second.contains("Diff y"),
+            "expected split preview to follow sidebar selection, got:\n{second}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_truncates_long_file_and_entity_labels() {
+        let mut app = AppState::from_diff_result(&sample_result_long_names(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(90, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with long split labels");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains('…'),
+            "expected ellipsis truncation in split mode, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_narrow_width_falls_back_to_list_only_with_notice() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(70, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed under split narrow fallback");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains(SPLIT_NARROW_NOTICE),
+            "expected split narrow fallback notice, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_side_by_side_preview_path_is_stable() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::SideBySide);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.set_viewport(160, 24);
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed in split side-by-side mode");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("Diff x"),
+            "expected split side-by-side preview title, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_shows_no_match_message_when_filter_hides_all_rows() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with split no-match state");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("No entities match filter (revie"),
+            "expected split no-match row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_without_rows_shows_preview_placeholder() {
+        let mut app = AppState::from_diff_result(&sample_result_empty(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with empty split rows");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("No entity selected"),
+            "expected split preview placeholder, got:\n{rendered}"
         );
     }
 
@@ -1633,6 +2101,20 @@ mod tests {
     }
 
     #[test]
+    fn split_footer_parts_uses_narrow_notice_when_no_status_exists() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let footer = split_footer_parts(&app, Some(SPLIT_NARROW_NOTICE));
+        assert_eq!(
+            render_footer_cells(&footer.cells),
+            "m: pairwise | r: all | e: hunk"
+        );
+        assert_eq!(footer.status.as_deref(), Some(SPLIT_NARROW_NOTICE));
+    }
+
+    #[test]
     fn footer_layout_widths_reserve_separator_for_status_slot() {
         let (controls_width, cell_width, status_width) =
             footer_layout_widths(30, "m: pairwise", Some("Loading..."));
@@ -1673,6 +2155,16 @@ mod tests {
         assert!(controls_width > 0);
         assert!(status_width > 0);
         assert_eq!(controls_width + cell_width + status_width, 80);
+    }
+
+    #[test]
+    fn split_left_width_clamps_to_contract_bounds() {
+        assert_eq!(
+            split_left_width(SPLIT_LEFT_MIN_COLS + SPLIT_RIGHT_MIN_COLS),
+            SPLIT_LEFT_MIN_COLS
+        );
+        assert_eq!(split_left_width(120), 36);
+        assert_eq!(split_left_width(200), 60);
     }
 
     #[test]
