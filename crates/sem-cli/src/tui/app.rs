@@ -402,6 +402,14 @@ impl AppState {
         self.mode
     }
 
+    pub fn mode_token(&self) -> &'static str {
+        match self.mode {
+            Mode::List => "list",
+            Mode::Split => "split",
+            Mode::Detail => "detail",
+        }
+    }
+
     pub fn effective_view(&self) -> DiffView {
         if self.requested_view == DiffView::SideBySide
             && self.viewport_width < MIN_SIDE_BY_SIDE_WIDTH
@@ -1193,6 +1201,21 @@ mod tests {
     }
 
     #[test]
+    fn cycle_round_trip_list_enter_detail_v_list_v_split_is_deterministic() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+    }
+
+    #[test]
     fn side_by_side_falls_back_on_narrow_width() {
         let mut app = app();
         app.requested_view = DiffView::SideBySide;
@@ -1304,11 +1327,17 @@ mod tests {
             DiffView::Unified,
         );
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+        assert_eq!(
+            app.unified_lines().first().map(|line| line.1.as_str()),
+            Some("content unavailable")
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
-        assert_eq!(app.unified_lines().first().map(|line| line.1.as_str()), Some("content unavailable"));
+        assert_eq!(
+            app.unified_lines().first().map(|line| line.1.as_str()),
+            Some("content unavailable")
+        );
         assert_eq!(app.mode(), Mode::Detail);
     }
 
@@ -1911,6 +1940,38 @@ mod tests {
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
             Some("beta")
+        );
+    }
+
+    #[test]
+    fn split_mode_filter_cycle_retargets_when_selected_entity_becomes_hidden() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("beta")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(app.review_filter(), ReviewFilter::Reviewed);
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("alpha")
         );
     }
 

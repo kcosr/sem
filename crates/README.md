@@ -41,16 +41,18 @@ sem impact validateToken --file-exts .py
 
 `sem diff --tui`:
 
-- `↑/↓` or `j/k`: selection / detail scrolling
+- `↑/↓` or `j/k`: selection in `list`/`split`; line scrolling in `detail`
 - `Space`: toggle reviewed state on selected/opened entity
 - `r`: cycle review filter (`all` -> `unreviewed` -> `reviewed`)
-- `Enter` / `Esc`: open and close entity detail
+- `v`: cycle views (`list` -> `split` -> `detail` -> `list`)
+- `Enter`: open entity detail from `list` or `split`
+- `Esc`: close `detail` and return to prior non-detail view
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
 - `e`: toggle `hunk` / `entity` detail context mode
-- `Tab`: unified vs side-by-side toggle
-- `n/p`: hunk navigation
-- `PageUp/PageDown`: page scrolling in detail mode
+- `Tab`: unified vs side-by-side toggle in `detail` and split preview
+- `n/p`: hunk navigation (detail-only; no-op in split)
+- `PageUp/PageDown`: page scrolling in detail mode (no-op in split)
 - `g/G`: top/bottom jump in active mode
 - `?`: help overlay
 - `q`: quit

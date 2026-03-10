@@ -325,19 +325,14 @@ fn split_left_width(total_width: u16) -> u16 {
         return SPLIT_LEFT_MIN_COLS;
     }
 
-    let target =
-        ((u32::from(total_width) * u32::from(SPLIT_LEFT_RATIO_PERCENT)) / 100).max(u32::from(SPLIT_LEFT_MIN_COLS));
+    let target = ((u32::from(total_width) * u32::from(SPLIT_LEFT_RATIO_PERCENT)) / 100)
+        .max(u32::from(SPLIT_LEFT_MIN_COLS));
     let max_left = total_width.saturating_sub(SPLIT_RIGHT_MIN_COLS);
     let bounded = target.min(u32::from(max_left));
     bounded as u16
 }
 
-fn draw_split_sidebar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &AppState,
-    notice: Option<&str>,
-) {
+fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice: Option<&str>) {
     let mut items: Vec<ListItem<'_>> = Vec::new();
     let mut selectable_indices: Vec<usize> = Vec::new();
     let mut current_file: Option<&str> = None;
@@ -362,7 +357,10 @@ fn draw_split_sidebar(
     if visible_indices.is_empty() {
         items.push(ListItem::new(Line::styled(
             fit_cell(
-                &format!("No entities match filter ({})", app.review_filter().as_token()),
+                &format!(
+                    "No entities match filter ({})",
+                    app.review_filter().as_token()
+                ),
                 content_width,
             ),
             Style::default().fg(Color::DarkGray),
@@ -409,12 +407,7 @@ fn draw_split_sidebar(
                 ),
                 Span::raw(" "),
             ];
-            append_delta_spans(
-                &mut spans,
-                row.added_lines,
-                row.removed_lines,
-                delta_col,
-            );
+            append_delta_spans(&mut spans, row.added_lines, row.removed_lines, delta_col);
 
             selectable_indices.push(items.len());
             items.push(ListItem::new(Line::from(spans)));
@@ -422,7 +415,11 @@ fn draw_split_sidebar(
     }
 
     let list = List::new(items)
-        .block(Block::default().title("Entities (Split)").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Entities (Split)")
+                .borders(Borders::ALL),
+        )
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     let mut state = ListState::default();
@@ -446,10 +443,7 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let rendered = super::detail::render_change(&row.change, app.entity_context_mode());
     let content_height = usize::from(area.height.saturating_sub(2)).max(1);
     let selected_file_path = Some(row.file_path.as_str());
-    let title = fit_cell(
-        &format!("Diff {} ({})", row.entity_name, row.file_path),
-        48,
-    );
+    let title = fit_cell(&format!("Diff {} ({})", row.entity_name, row.file_path), 48);
 
     match app.effective_view() {
         DiffView::Unified => {
@@ -492,25 +486,21 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
 
     FooterParts {
         controls,
-        cells: vec![
-            FooterCell::new('m', app.step_mode().as_token()),
-            FooterCell::new('r', app.review_filter().as_token()),
-            FooterCell::new('e', app.entity_context_mode().as_token()),
-        ],
+        cells: footer_cells(app),
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
 }
 
 fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, Tab view, [/] step, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, Tab view, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -520,18 +510,14 @@ fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterPart
 
     FooterParts {
         controls,
-        cells: vec![
-            FooterCell::new('m', app.step_mode().as_token()),
-            FooterCell::new('r', app.review_filter().as_token()),
-            FooterCell::new('e', app.entity_context_mode().as_token()),
-        ],
+        cells: footer_cells(app),
         status,
     }
 }
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc list, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc back, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, v cycle-view, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -542,13 +528,18 @@ fn detail_footer_parts(app: &AppState) -> FooterParts {
 
     FooterParts {
         controls,
-        cells: vec![
-            FooterCell::new('m', app.step_mode().as_token()),
-            FooterCell::new('r', app.review_filter().as_token()),
-            FooterCell::new('e', app.entity_context_mode().as_token()),
-        ],
+        cells: footer_cells(app),
         status: footer_status_message(app.commit_loading(), app.status_message()),
     }
+}
+
+fn footer_cells(app: &AppState) -> Vec<FooterCell> {
+    vec![
+        FooterCell::new('m', app.step_mode().as_token()),
+        FooterCell::new('r', app.review_filter().as_token()),
+        FooterCell::new('e', app.entity_context_mode().as_token()),
+        FooterCell::new('v', app.mode_token()),
+    ]
 }
 
 fn footer_status_message(loading: bool, status: Option<&str>) -> Option<String> {
@@ -564,12 +555,14 @@ fn render_footer_cells(cells: &[FooterCell]) -> String {
     let mut mode_value: Option<&str> = None;
     let mut review_value: Option<&str> = None;
     let mut entity_value: Option<&str> = None;
+    let mut view_value: Option<&str> = None;
 
     for cell in cells {
         match cell.key {
             'm' if mode_value.is_none() => mode_value = Some(cell.value.as_str()),
             'r' if review_value.is_none() => review_value = Some(cell.value.as_str()),
             'e' if entity_value.is_none() => entity_value = Some(cell.value.as_str()),
+            'v' if view_value.is_none() => view_value = Some(cell.value.as_str()),
             _ => {}
         }
     }
@@ -580,6 +573,9 @@ fn render_footer_cells(cells: &[FooterCell]) -> String {
     }
     if let Some(value) = entity_value {
         rendered.push(format!("e: {value}"));
+    }
+    if let Some(value) = view_value {
+        rendered.push(format!("v: {value}"));
     }
     rendered.join(FOOTER_CELL_SEPARATOR)
 }
@@ -710,19 +706,31 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  stepping is disabled for stdin/two-file mode"),
         Line::from("  Enter open detail"),
         Line::from("  g/G jump top/bottom"),
+        Line::from("Split Mode:"),
+        Line::from("  ↑/↓ or j/k move left-pane selection"),
+        Line::from("  Space toggle reviewed on focused entity"),
+        Line::from("  r cycle review filter"),
+        Line::from("  [ / ] step older/newer endpoint"),
+        Line::from("  m toggle pairwise/cumulative mode"),
+        Line::from("  e toggle hunk/entity context"),
+        Line::from("  Tab toggle split preview unified/side-by-side"),
+        Line::from("  Enter open detail"),
+        Line::from("  n/p, PageUp/PageDown, Left/Right no-op in split"),
+        Line::from("  g/G jump top/bottom"),
         Line::from("Detail Mode:"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  Space toggle reviewed on opened entity"),
         Line::from("  r cycle review filter"),
         Line::from("  e toggle hunk/entity context"),
-        Line::from("  Esc back to list"),
+        Line::from("  Esc back to prior non-detail view"),
         Line::from("  Left/Right previous/next entity"),
         Line::from("  Tab toggle unified/side-by-side"),
         Line::from("  n/p next/previous hunk"),
         Line::from("  PageUp/PageDown scroll by page"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Global:"),
+        Line::from("  v cycle list/split/detail views"),
         Line::from("  ? toggle help"),
         Line::from("  q or Ctrl+c quit"),
     ];
@@ -1630,7 +1638,7 @@ mod tests {
         let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
         app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
 
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(120, 70);
         let mut terminal = Terminal::new(backend).expect("terminal should initialize");
         terminal
             .draw(|frame| draw(frame, &app))
@@ -1641,6 +1649,10 @@ mod tests {
             rendered.contains("e toggle hunk/entity context"),
             "expected help overlay toggle line, got:\n{rendered}"
         );
+        assert!(
+            rendered.contains("v cycle list/split/detail views"),
+            "expected help overlay view cycle line, got:\n{rendered}"
+        );
     }
 
     #[test]
@@ -1649,7 +1661,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
 
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(120, 70);
         let mut terminal = Terminal::new(backend).expect("terminal should initialize");
         terminal
             .draw(|frame| draw(frame, &app))
@@ -1659,6 +1671,34 @@ mod tests {
         assert!(
             rendered.contains("e toggle hunk/entity context"),
             "expected help overlay toggle line in detail mode, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Esc back to prior non-detail view"),
+            "expected detail-mode escape guidance in help overlay, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_help_overlay_includes_split_guidance() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 70);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with split help overlay");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("n/p, PageUp/PageDown, Left/Right no-op in split"),
+            "expected split no-op guidance in help overlay, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("v cycle list/split/detail views"),
+            "expected global view-cycle guidance in split help overlay, got:\n{rendered}"
         );
     }
 
@@ -1722,6 +1762,35 @@ mod tests {
     }
 
     #[test]
+    fn draw_split_mode_filter_fallback_retargets_preview_to_visible_row() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        configure_commit_navigation(&mut app);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert!(app.toggle_selected_reviewed());
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(
+            app.selected_row().map(|row| row.entity_name.as_str()),
+            Some("x")
+        );
+
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with split filter fallback");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("Diff x"),
+            "expected split preview to follow fallback selected row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn draw_split_mode_truncates_long_file_and_entity_labels() {
         let mut app = AppState::from_diff_result(&sample_result_long_names(), DiffView::Unified);
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
@@ -1756,6 +1825,25 @@ mod tests {
         assert!(
             rendered.contains(SPLIT_NARROW_NOTICE),
             "expected split narrow fallback notice, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_split_mode_narrow_width_with_side_by_side_request_still_shows_notice() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::SideBySide);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        let backend = TestBackend::new(70, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed under split narrow fallback with side-by-side request");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains(SPLIT_NARROW_NOTICE),
+            "expected split narrow fallback notice for side-by-side request, got:\n{rendered}"
         );
     }
 
@@ -2002,7 +2090,7 @@ mod tests {
         let footer = list_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: hunk"
+            "m: pairwise | r: all | e: hunk | v: list"
         );
         assert_eq!(footer.status, None);
     }
@@ -2051,7 +2139,7 @@ mod tests {
         let footer = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: cumulative | r: all | e: hunk"
+            "m: cumulative | r: all | e: hunk | v: detail"
         );
     }
 
@@ -2063,14 +2151,14 @@ mod tests {
         let baseline = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&baseline.cells),
-            "m: pairwise | r: all | e: hunk"
+            "m: pairwise | r: all | e: hunk | v: detail"
         );
 
         app.set_commit_loading(true);
         let loading = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&loading.cells),
-            "m: pairwise | r: all | e: hunk"
+            "m: pairwise | r: all | e: hunk | v: detail"
         );
         assert_eq!(loading.status.as_deref(), Some("Loading..."));
     }
@@ -2083,7 +2171,7 @@ mod tests {
         let footer = list_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: entity"
+            "m: pairwise | r: all | e: entity | v: list"
         );
     }
 
@@ -2096,7 +2184,7 @@ mod tests {
         let footer = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: entity"
+            "m: pairwise | r: all | e: entity | v: detail"
         );
     }
 
@@ -2109,7 +2197,7 @@ mod tests {
         let footer = split_footer_parts(&app, Some(SPLIT_NARROW_NOTICE));
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: hunk"
+            "m: pairwise | r: all | e: hunk | v: split"
         );
         assert_eq!(footer.status.as_deref(), Some(SPLIT_NARROW_NOTICE));
     }
@@ -2146,8 +2234,8 @@ mod tests {
     }
 
     #[test]
-    fn footer_layout_widths_preserve_three_cells_at_standard_width() {
-        let cell_text = "m: cumulative | r: unreviewed | e: entity";
+    fn footer_layout_widths_preserve_four_cells_at_standard_width() {
+        let cell_text = "m: cumulative | r: unreviewed | e: entity | v: split";
         let (controls_width, cell_width, status_width) =
             footer_layout_widths(80, cell_text, Some("Loading..."));
 
@@ -2155,6 +2243,17 @@ mod tests {
         assert!(controls_width > 0);
         assert!(status_width > 0);
         assert_eq!(controls_width + cell_width + status_width, 80);
+    }
+
+    #[test]
+    fn footer_layout_widths_allow_four_cell_rail_to_take_precedence_when_narrow() {
+        let cell_text = "m: cumulative | r: unreviewed | e: entity | v: detail";
+        let (controls_width, cell_width, status_width) =
+            footer_layout_widths(40, cell_text, Some("Loading..."));
+
+        assert_eq!(controls_width, 0);
+        assert_eq!(cell_width, 40);
+        assert_eq!(status_width, 0);
     }
 
     #[test]

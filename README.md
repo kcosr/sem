@@ -88,16 +88,18 @@ sem blame src/auth.ts
 
 `sem diff --tui` supports:
 
-- `↑/↓` or `j/k`: move selection / scroll detail
+- `↑/↓` or `j/k`: move selection in `list`/`split`; scroll lines in `detail`
 - `Space`: toggle reviewed state on selected/opened entity
 - `r`: cycle review filter (`all` -> `unreviewed` -> `reviewed`)
-- `Enter`: open selected entity detail
+- `v`: cycle views (`list` -> `split` -> `detail` -> `list`)
+- `Enter`: open selected entity detail from `list` or `split`
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
-- `Esc`: close detail view
-- `Tab`: toggle unified vs side-by-side detail view
-- `n/p`: jump to next/previous hunk
-- `PageUp/PageDown`: scroll detail by page
+- `e`: toggle `hunk` / `entity` detail context mode
+- `Esc`: close `detail` and return to prior non-detail view
+- `Tab`: toggle unified vs side-by-side in `detail` and split preview
+- `n/p`: jump to next/previous hunk (detail-only; no-op in split)
+- `PageUp/PageDown`: scroll detail by page (detail-only; no-op in split)
 - `g/G`: jump to top/bottom
 - `?`: toggle help overlay
 - `q`: quit

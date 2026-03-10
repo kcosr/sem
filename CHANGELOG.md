@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-03-10
+
+### Added
+- Diff TUI split mode (`list` + live preview) with compact sidebar rendering and deterministic global view-cycle key (`v`).
+- Narrow-width split fallback (`compact-list-only`) with explicit user notice when preview pane cannot be shown.
+
+### Changed
+- TUI mode model now includes `list`, `split`, and `detail` with locked cycle order `list -> split -> detail -> list`.
+- `Esc` in detail now returns to the prior non-detail mode (`list` or `split`) instead of always returning to list.
+- Footer cell rail now includes `v: <list|split|detail>` in locked order `m | r | e | v`.
+- Help/controls text now documents split behavior and global `v` view-cycling contract.
+
+### Testing
+- Added sem-cli hardening coverage for split preview-selection sync, split filter-driven selection fallback, detail cycle-wrap boundary, and side-by-side split behavior under narrow-width fallback.
+
 ## 2026-03-08
 
 ### Added
