@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const REVIEW_STATE_VERSION: u32 = 1;
@@ -260,7 +262,8 @@ impl ReviewStateStore {
         })
     }
 
-    pub fn file_path(&self) -> &Path {
+    #[cfg(test)]
+    pub fn file_path(&self) -> &std::path::Path {
         &self.file_path
     }
 }

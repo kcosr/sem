@@ -36,6 +36,12 @@ const SPLIT_LEFT_MIN_COLS: u16 = 28;
 const SPLIT_RIGHT_MIN_COLS: u16 = 52;
 const SPLIT_NARROW_NOTICE: &str = "Split preview hidden: terminal too narrow";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SplitScrollTarget {
+    Sidebar,
+    Preview,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ListColumnWidths {
     type_col: usize,
@@ -319,6 +325,238 @@ fn draw_split(frame: &mut Frame<'_>, app: &AppState) {
     draw_footer(frame, chunks[2], &footer);
 }
 
+pub(super) fn list_selection_at(
+    viewport_width: u16,
+    viewport_height: u16,
+    column: u16,
+    row: u16,
+    app: &AppState,
+) -> Option<usize> {
+    let list_body = list_body_rect(viewport_width, viewport_height)?;
+    if !point_in_rect(list_body, column, row) {
+        return None;
+    }
+    if row <= list_body.y
+        || row
+            >= list_body
+                .y
+                .saturating_add(list_body.height)
+                .saturating_sub(1)
+    {
+        return None;
+    }
+
+    let inner_height = usize::from(list_body.height.saturating_sub(2));
+    if inner_height == 0 {
+        return None;
+    }
+
+    let selectable_item_indices = list_selectable_item_indices(app);
+    if selectable_item_indices.is_empty() {
+        return None;
+    }
+
+    let selected_entity = app
+        .selected()
+        .min(selectable_item_indices.len().saturating_sub(1));
+    let selected_item_index = selectable_item_indices[selected_entity];
+    let offset = selected_item_index.saturating_sub(inner_height.saturating_sub(1));
+    let visible_row_index = usize::from(row.saturating_sub(list_body.y.saturating_add(1)));
+    let item_index = offset.saturating_add(visible_row_index);
+
+    selectable_item_indices
+        .iter()
+        .position(|&selectable_item_index| selectable_item_index == item_index)
+}
+
+pub(super) fn split_scroll_target_at(
+    viewport_width: u16,
+    viewport_height: u16,
+    column: u16,
+    row: u16,
+) -> Option<SplitScrollTarget> {
+    let split_body = split_body_rect(viewport_width, viewport_height)?;
+    if !point_in_rect(split_body, column, row) {
+        return None;
+    }
+
+    let split_min_width = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
+    if split_body.width < split_min_width {
+        return Some(SplitScrollTarget::Sidebar);
+    }
+
+    let left_width = split_left_width(split_body.width);
+    if column < split_body.x.saturating_add(left_width) {
+        Some(SplitScrollTarget::Sidebar)
+    } else {
+        Some(SplitScrollTarget::Preview)
+    }
+}
+
+pub(super) fn split_sidebar_selection_at(
+    viewport_width: u16,
+    viewport_height: u16,
+    column: u16,
+    row: u16,
+    app: &AppState,
+) -> Option<usize> {
+    let split_body = split_body_rect(viewport_width, viewport_height)?;
+    let sidebar_area = split_sidebar_area(split_body);
+    if !point_in_rect(sidebar_area, column, row) {
+        return None;
+    }
+    if row <= sidebar_area.y
+        || row
+            >= sidebar_area
+                .y
+                .saturating_add(sidebar_area.height)
+                .saturating_sub(1)
+    {
+        return None;
+    }
+
+    let inner_height = usize::from(sidebar_area.height.saturating_sub(2));
+    if inner_height == 0 {
+        return None;
+    }
+
+    let has_narrow_notice = split_sidebar_has_narrow_notice(split_body.width);
+    let selectable_item_indices = split_sidebar_selectable_item_indices(app, has_narrow_notice);
+    if selectable_item_indices.is_empty() {
+        return None;
+    }
+
+    let selected_entity = app
+        .selected()
+        .min(selectable_item_indices.len().saturating_sub(1));
+    let selected_item_index = selectable_item_indices[selected_entity];
+    let offset = selected_item_index.saturating_sub(inner_height.saturating_sub(1));
+    let visible_row_index = usize::from(row.saturating_sub(sidebar_area.y.saturating_add(1)));
+    let item_index = offset.saturating_add(visible_row_index);
+
+    selectable_item_indices
+        .iter()
+        .position(|&selectable_item_index| selectable_item_index == item_index)
+}
+
+fn split_body_rect(viewport_width: u16, viewport_height: u16) -> Option<Rect> {
+    let area = Rect::new(0, 0, viewport_width, viewport_height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let split_body = chunks[1];
+    if split_body.width == 0 || split_body.height == 0 {
+        return None;
+    }
+    Some(split_body)
+}
+
+fn list_body_rect(viewport_width: u16, viewport_height: u16) -> Option<Rect> {
+    let area = Rect::new(0, 0, viewport_width, viewport_height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let list_body = chunks[1];
+    if list_body.width == 0 || list_body.height == 0 {
+        return None;
+    }
+    Some(list_body)
+}
+
+fn split_sidebar_area(split_body: Rect) -> Rect {
+    if split_sidebar_has_narrow_notice(split_body.width) {
+        return split_body;
+    }
+
+    Rect::new(
+        split_body.x,
+        split_body.y,
+        split_left_width(split_body.width),
+        split_body.height,
+    )
+}
+
+fn split_sidebar_has_narrow_notice(split_body_width: u16) -> bool {
+    let split_min_width = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
+    split_body_width < split_min_width
+}
+
+fn split_sidebar_selectable_item_indices(app: &AppState, has_narrow_notice: bool) -> Vec<usize> {
+    let visible_indices = app.visible_row_indices();
+    if visible_indices.is_empty() {
+        return vec![];
+    }
+
+    let mut selectable_item_indices = Vec::with_capacity(visible_indices.len());
+    let mut current_file: Option<&str> = None;
+    let mut item_index: usize = if has_narrow_notice { 2 } else { 0 };
+
+    for row_index in visible_indices {
+        let Some(row) = app.rows().get(row_index) else {
+            continue;
+        };
+
+        if current_file != Some(row.file_path.as_str()) {
+            if item_index > 0 {
+                item_index = item_index.saturating_add(1);
+            }
+            current_file = Some(row.file_path.as_str());
+            item_index = item_index.saturating_add(1);
+        }
+
+        selectable_item_indices.push(item_index);
+        item_index = item_index.saturating_add(1);
+    }
+
+    selectable_item_indices
+}
+
+fn list_selectable_item_indices(app: &AppState) -> Vec<usize> {
+    let visible_indices = app.visible_row_indices();
+    if visible_indices.is_empty() {
+        return vec![];
+    }
+
+    let mut selectable_item_indices = Vec::with_capacity(visible_indices.len());
+    let mut current_file: Option<&str> = None;
+    let mut item_index: usize = 0;
+
+    for row_index in visible_indices {
+        let Some(row) = app.rows().get(row_index) else {
+            continue;
+        };
+
+        if current_file != Some(row.file_path.as_str()) {
+            if item_index > 0 {
+                item_index = item_index.saturating_add(1);
+            }
+            current_file = Some(row.file_path.as_str());
+            item_index = item_index.saturating_add(1);
+        }
+
+        selectable_item_indices.push(item_index);
+        item_index = item_index.saturating_add(1);
+    }
+
+    selectable_item_indices
+}
+
+fn point_in_rect(rect: Rect, column: u16, row: u16) -> bool {
+    let right = rect.x.saturating_add(rect.width);
+    let bottom = rect.y.saturating_add(rect.height);
+    column >= rect.x && column < right && row >= rect.y && row < bottom
+}
+
 fn split_left_width(total_width: u16) -> u16 {
     let minimum_total = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
     if total_width <= minimum_total {
@@ -442,6 +680,7 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
     let rendered = super::detail::render_change(&row.change, app.entity_context_mode());
     let content_height = usize::from(area.height.saturating_sub(2)).max(1);
+    let start = app.detail_scroll();
     let selected_file_path = Some(row.file_path.as_str());
     let title = fit_cell(&format!("Diff {} ({})", row.entity_name, row.file_path), 48);
 
@@ -454,8 +693,9 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                     .flatten()
                     .max(),
             );
-            let end = content_height.min(rows.len());
-            let lines: Vec<Line<'_>> = rows[..end]
+            let start = start.min(rows.len());
+            let end = (start + content_height).min(rows.len());
+            let lines: Vec<Line<'_>> = rows[start..end]
                 .iter()
                 .map(|preview| render_unified_row(preview, number_width, selected_file_path))
                 .collect();
@@ -470,8 +710,9 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         DiffView::SideBySide => {
             let line_width = area.width.saturating_sub(6) as usize;
             let half = (line_width / 2).max(20);
-            let end = content_height.min(rendered.side_by_side_lines.len());
-            let lines: Vec<Line<'_>> = rendered.side_by_side_lines[..end]
+            let start = start.min(rendered.side_by_side_lines.len());
+            let end = (start + content_height).min(rendered.side_by_side_lines.len());
+            let lines: Vec<Line<'_>> = rendered.side_by_side_lines[start..end]
                 .iter()
                 .map(|preview| render_side_by_side_row(preview, half, selected_file_path))
                 .collect();
@@ -500,7 +741,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, Tab view, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move-focused-pane, Tab focus-pane, s side-by-side, Space toggle-reviewed, Enter open, n/p hunks, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -517,7 +758,7 @@ fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterPart
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc back, Space toggle-reviewed, [/] step, ←/→ entity, Tab view, n/p hunks, PgUp/PgDn scroll, v cycle-view, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc back, Space toggle-reviewed, [/] step, ←/→ entity, s side-by-side, n/p hunks, PgUp/PgDn scroll, v cycle-view, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -707,15 +948,17 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  Enter open detail"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Split Mode:"),
-        Line::from("  ↑/↓ or j/k move left-pane selection"),
+        Line::from("  ↑/↓ or j/k move focused pane"),
         Line::from("  Space toggle reviewed on focused entity"),
         Line::from("  r cycle review filter"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  e toggle hunk/entity context"),
-        Line::from("  Tab toggle split preview unified/side-by-side"),
+        Line::from("  Tab toggle split focus between sidebar/preview"),
+        Line::from("  s toggle split preview unified/side-by-side"),
+        Line::from("  n/p next/previous hunk in split preview"),
         Line::from("  Enter open detail"),
-        Line::from("  n/p, PageUp/PageDown, Left/Right no-op in split"),
+        Line::from("  PageUp/PageDown and Left/Right no-op in split"),
         Line::from("  g/G jump top/bottom"),
         Line::from("Detail Mode:"),
         Line::from("  [ / ] step older/newer endpoint"),
@@ -725,7 +968,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  e toggle hunk/entity context"),
         Line::from("  Esc back to prior non-detail view"),
         Line::from("  Left/Right previous/next entity"),
-        Line::from("  Tab toggle unified/side-by-side"),
+        Line::from("  s toggle unified/side-by-side"),
         Line::from("  n/p next/previous hunk"),
         Line::from("  PageUp/PageDown scroll by page"),
         Line::from("  g/G jump top/bottom"),
@@ -1676,6 +1919,10 @@ mod tests {
             rendered.contains("Esc back to prior non-detail view"),
             "expected detail-mode escape guidance in help overlay, got:\n{rendered}"
         );
+        assert!(
+            rendered.contains("s toggle unified/side-by-side"),
+            "expected detail-mode side-by-side key guidance in help overlay, got:\n{rendered}"
+        );
     }
 
     #[test]
@@ -1693,7 +1940,19 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("n/p, PageUp/PageDown, Left/Right no-op in split"),
+            rendered.contains("n/p next/previous hunk in split preview"),
+            "expected split hunk guidance in help overlay, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Tab toggle split focus between sidebar/preview"),
+            "expected split focus guidance in help overlay, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("s toggle split preview unified/side-by-side"),
+            "expected split side-by-side key guidance in help overlay, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("PageUp/PageDown and Left/Right no-op in split"),
             "expected split no-op guidance in help overlay, got:\n{rendered}"
         );
         assert!(
@@ -2264,6 +2523,59 @@ mod tests {
         );
         assert_eq!(split_left_width(120), 36);
         assert_eq!(split_left_width(200), 60);
+    }
+
+    #[test]
+    fn split_scroll_target_at_routes_mouse_wheel_to_sidebar_or_preview() {
+        assert_eq!(
+            split_scroll_target_at(120, 24, 10, 8),
+            Some(SplitScrollTarget::Sidebar)
+        );
+        assert_eq!(
+            split_scroll_target_at(120, 24, 50, 8),
+            Some(SplitScrollTarget::Preview)
+        );
+    }
+
+    #[test]
+    fn split_scroll_target_at_returns_none_outside_body_and_handles_narrow_fallback() {
+        assert_eq!(split_scroll_target_at(120, 24, 10, 1), None);
+        assert_eq!(split_scroll_target_at(120, 24, 10, 23), None);
+        assert_eq!(
+            split_scroll_target_at(70, 24, 60, 8),
+            Some(SplitScrollTarget::Sidebar)
+        );
+    }
+
+    #[test]
+    fn list_selection_at_maps_click_rows_to_list_entities() {
+        let app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        assert_eq!(list_selection_at(120, 24, 10, 5, &app), Some(0));
+        assert_eq!(list_selection_at(120, 24, 10, 8, &app), Some(1));
+        assert_eq!(list_selection_at(120, 24, 10, 1, &app), None);
+        assert_eq!(list_selection_at(120, 24, 10, 3, &app), None);
+    }
+
+    #[test]
+    fn split_sidebar_selection_at_maps_click_rows_to_sidebar_entities() {
+        let mut app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 5, &app), Some(0));
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 8, &app), Some(1));
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 4, &app), None);
+        assert_eq!(split_sidebar_selection_at(120, 24, 50, 5, &app), None);
+    }
+
+    #[test]
+    fn split_sidebar_selection_at_handles_narrow_notice_layout() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        assert_eq!(split_sidebar_selection_at(70, 24, 10, 8, &app), Some(0));
+        assert_eq!(split_sidebar_selection_at(70, 24, 10, 4, &app), None);
     }
 
     #[test]

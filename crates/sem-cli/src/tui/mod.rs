@@ -9,7 +9,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, DisableMouseCapture, Event};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -34,7 +36,7 @@ pub fn run_tui(
     navigation_bootstrap: Option<StepNavigationBootstrap>,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     enable_raw_mode()?;
 
     let guard = TerminalGuard;
@@ -109,6 +111,65 @@ pub fn run_tui(
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
                 Event::Key(key) => app_state.handle_key(key),
+                Event::Mouse(mouse) => {
+                    if app_state.show_help() {
+                        continue;
+                    }
+
+                    let (viewport_width, viewport_height) = app_state.viewport_size();
+                    match app_state.mode() {
+                        app::Mode::List => match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::Up(MouseButton::Left) => {
+                                if let Some(list_selection) = render::list_selection_at(
+                                    viewport_width,
+                                    viewport_height,
+                                    mouse.column,
+                                    mouse.row,
+                                    &app_state,
+                                ) {
+                                    app_state.handle_list_click(list_selection);
+                                }
+                            }
+                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                                app_state.handle_list_mouse_scroll(matches!(
+                                    mouse.kind,
+                                    MouseEventKind::ScrollDown
+                                ));
+                            }
+                            _ => {}
+                        },
+                        app::Mode::Split => match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                if let Some(sidebar_selection) = render::split_sidebar_selection_at(
+                                    viewport_width,
+                                    viewport_height,
+                                    mouse.column,
+                                    mouse.row,
+                                    &app_state,
+                                ) {
+                                    app_state.handle_split_sidebar_click(sidebar_selection);
+                                }
+                            }
+                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                                let scroll_down = matches!(mouse.kind, MouseEventKind::ScrollDown);
+                                if let Some(target) = render::split_scroll_target_at(
+                                    viewport_width,
+                                    viewport_height,
+                                    mouse.column,
+                                    mouse.row,
+                                ) {
+                                    app_state.handle_split_mouse_scroll(
+                                        matches!(target, render::SplitScrollTarget::Preview),
+                                        scroll_down,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        },
+                        app::Mode::Detail => {}
+                    }
+                }
                 Event::Resize(width, height) => app_state.set_viewport(width, height),
                 _ => {}
             }

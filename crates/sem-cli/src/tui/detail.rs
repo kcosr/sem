@@ -288,7 +288,10 @@ fn changed_region_side_by_side_anchors(lines: &[SideBySideLine]) -> Vec<usize> {
 }
 
 fn is_changed_kind(kind: LineKind) -> bool {
-    matches!(kind, LineKind::Added | LineKind::Removed | LineKind::Modified)
+    matches!(
+        kind,
+        LineKind::Added | LineKind::Removed | LineKind::Modified
+    )
 }
 
 fn flush_pending(
@@ -414,7 +417,10 @@ mod tests {
         let after = "line1\nline2 changed\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11 changed\nline12\n";
 
         let grouped = render_change(&change(Some(before), Some(after)), EntityContextMode::Hunk);
-        let entity = render_change(&change(Some(before), Some(after)), EntityContextMode::Entity);
+        let entity = render_change(
+            &change(Some(before), Some(after)),
+            EntityContextMode::Entity,
+        );
 
         assert!(entity.unified_lines.len() > grouped.unified_lines.len());
         assert_eq!(entity.unified_hunks, vec![2, 12]);
@@ -442,7 +448,10 @@ mod tests {
     fn render_change_entity_mode_dedupes_contiguous_multiline_change_region() {
         let before = "line1\nline2\nline3\nline4\n";
         let after = "line1\nline2 changed\nline3 changed\nline4\n";
-        let rendered = render_change(&change(Some(before), Some(after)), EntityContextMode::Entity);
+        let rendered = render_change(
+            &change(Some(before), Some(after)),
+            EntityContextMode::Entity,
+        );
 
         assert_eq!(rendered.unified_hunks, vec![2]);
         assert_eq!(rendered.side_by_side_hunks, vec![2]);

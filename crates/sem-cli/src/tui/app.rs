@@ -16,6 +16,7 @@ use crate::commands::diff::{
 use super::detail::{render_change, EntityContextMode, LineKind, RenderedDiff, SideBySideLine};
 
 const MIN_SIDE_BY_SIDE_WIDTH: u16 = 120;
+const MIN_SPLIT_PREVIEW_WIDTH: u16 = 80;
 
 #[derive(Clone, Debug)]
 pub struct EntityRow {
@@ -35,6 +36,21 @@ pub enum Mode {
     Detail,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SplitFocus {
+    Sidebar,
+    Preview,
+}
+
+impl SplitFocus {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Sidebar => Self::Preview,
+            Self::Preview => Self::Sidebar,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
@@ -43,6 +59,7 @@ pub struct AppState {
     last_non_detail_mode: Mode,
     requested_view: DiffView,
     entity_context_mode: EntityContextMode,
+    split_focus: SplitFocus,
     detail_scroll: usize,
     detail_hunk_index: usize,
     detail: Option<RenderedDiff>,
@@ -85,6 +102,7 @@ impl AppState {
             last_non_detail_mode: Mode::List,
             requested_view: initial_view,
             entity_context_mode: EntityContextMode::Hunk,
+            split_focus: SplitFocus::Sidebar,
             detail_scroll: 0,
             detail_hunk_index: 0,
             detail: None,
@@ -135,6 +153,9 @@ impl AppState {
     pub fn set_viewport(&mut self, width: u16, height: u16) {
         self.viewport_width = width;
         self.viewport_height = height;
+        if self.mode == Mode::Split && !self.split_preview_available() {
+            self.split_focus = SplitFocus::Sidebar;
+        }
     }
 
     pub fn rows(&self) -> &[EntityRow] {
@@ -195,6 +216,7 @@ impl AppState {
         self.commit_loading
     }
 
+    #[cfg(test)]
     pub fn commit_status_message(&self) -> Option<&str> {
         self.commit_status_message.as_deref()
     }
@@ -410,6 +432,10 @@ impl AppState {
         }
     }
 
+    pub fn viewport_size(&self) -> (u16, u16) {
+        (self.viewport_width, self.viewport_height)
+    }
+
     pub fn effective_view(&self) -> DiffView {
         if self.requested_view == DiffView::SideBySide
             && self.viewport_width < MIN_SIDE_BY_SIDE_WIDTH
@@ -428,6 +454,10 @@ impl AppState {
         self.requested_view == DiffView::SideBySide && self.effective_view() == DiffView::Unified
     }
 
+    fn split_preview_available(&self) -> bool {
+        self.viewport_width >= MIN_SPLIT_PREVIEW_WIDTH
+    }
+
     pub fn show_help(&self) -> bool {
         self.show_help
     }
@@ -438,6 +468,78 @@ impl AppState {
 
     pub fn detail_scroll(&self) -> usize {
         self.detail_scroll
+    }
+
+    pub fn handle_list_mouse_scroll(&mut self, scroll_down: bool) {
+        if self.mode != Mode::List {
+            return;
+        }
+
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
+            return;
+        }
+
+        let max_index = visible_len.saturating_sub(1);
+        self.selected = self.selected.min(max_index);
+
+        if scroll_down {
+            if self.selected < max_index {
+                self.selected += 1;
+            }
+        } else if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn handle_list_click(&mut self, list_selection: usize) {
+        if self.mode != Mode::List {
+            return;
+        }
+
+        let visible_len = self.visible_row_indices().len();
+        if list_selection >= visible_len {
+            return;
+        }
+        self.selected = list_selection;
+    }
+
+    pub fn handle_split_mouse_scroll(&mut self, preview_pane: bool, scroll_down: bool) {
+        if self.mode != Mode::Split {
+            return;
+        }
+
+        if preview_pane && self.split_preview_available() {
+            self.split_focus = SplitFocus::Preview;
+            self.sync_active_selection_detail();
+            if scroll_down {
+                self.scroll_line_down();
+            } else {
+                self.scroll_line_up();
+            }
+            return;
+        }
+
+        self.split_focus = SplitFocus::Sidebar;
+        if scroll_down {
+            self.split_sidebar_move_down();
+        } else {
+            self.split_sidebar_move_up();
+        }
+    }
+
+    pub fn handle_split_sidebar_click(&mut self, sidebar_selection: usize) {
+        if self.mode != Mode::Split {
+            return;
+        }
+
+        let visible_len = self.visible_row_indices().len();
+        if sidebar_selection >= visible_len {
+            return;
+        }
+
+        self.selected = sidebar_selection;
+        self.split_focus = SplitFocus::Sidebar;
     }
 
     pub fn detail_title(&self) -> String {
@@ -537,9 +639,12 @@ impl AppState {
                 let _ = self.toggle_selected_reviewed();
             }
             KeyCode::Char('r') => self.cycle_review_filter(),
-            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
-            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
-            KeyCode::Tab => self.toggle_view(),
+            KeyCode::Up | KeyCode::Char('k') => self.split_move_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.split_move_down(),
+            KeyCode::Tab => self.toggle_split_focus(),
+            KeyCode::Char('s') => self.toggle_view(),
+            KeyCode::Char('n') => self.next_hunk(),
+            KeyCode::Char('p') => self.previous_hunk(),
             KeyCode::Char('g') => self.selected = 0,
             KeyCode::Char('G') => {
                 let visible_len = self.visible_row_indices().len();
@@ -567,7 +672,7 @@ impl AppState {
             KeyCode::Esc => self.close_detail(),
             KeyCode::Left => self.previous_entity(),
             KeyCode::Right => self.next_entity(),
-            KeyCode::Tab => self.toggle_view(),
+            KeyCode::Char('s') => self.toggle_view(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
             KeyCode::PageDown => self.scroll_page_down(),
@@ -587,6 +692,7 @@ impl AppState {
             Mode::List => {
                 self.mode = Mode::Split;
                 self.last_non_detail_mode = Mode::Split;
+                self.split_focus = SplitFocus::Sidebar;
                 self.detail_scroll = 0;
                 self.detail_hunk_index = 0;
                 self.detail = None;
@@ -692,21 +798,94 @@ impl AppState {
         }
     }
 
+    fn toggle_split_focus(&mut self) {
+        if self.mode != Mode::Split {
+            return;
+        }
+        if !self.split_preview_available() {
+            self.split_focus = SplitFocus::Sidebar;
+            return;
+        }
+        self.split_focus = self.split_focus.toggled();
+        if self.split_focus == SplitFocus::Preview {
+            self.sync_active_selection_detail();
+        }
+    }
+
+    fn split_move_up(&mut self) {
+        if !self.split_preview_available() {
+            self.split_sidebar_move_up();
+            return;
+        }
+        match self.split_focus {
+            SplitFocus::Sidebar => self.split_sidebar_move_up(),
+            SplitFocus::Preview => {
+                self.sync_active_selection_detail();
+                self.scroll_line_up();
+            }
+        }
+    }
+
+    fn split_move_down(&mut self) {
+        if !self.split_preview_available() {
+            self.split_sidebar_move_down();
+            return;
+        }
+        match self.split_focus {
+            SplitFocus::Sidebar => self.split_sidebar_move_down(),
+            SplitFocus::Preview => {
+                self.sync_active_selection_detail();
+                self.scroll_line_down();
+            }
+        }
+    }
+
+    fn split_sidebar_move_up(&mut self) {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
+            return;
+        }
+
+        let max_index = visible_len.saturating_sub(1);
+        self.selected = self.selected.min(max_index);
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn split_sidebar_move_down(&mut self) {
+        let visible_len = self.visible_row_indices().len();
+        if visible_len == 0 {
+            return;
+        }
+
+        let max_index = visible_len.saturating_sub(1);
+        self.selected = self.selected.min(max_index);
+        if self.selected < max_index {
+            self.selected += 1;
+        }
+    }
+
     fn toggle_entity_context_mode(&mut self) {
         self.entity_context_mode = self.entity_context_mode.toggled();
 
         if self.mode == Mode::Detail {
+            let prior_hunk_index = self.detail_hunk_index;
             if let Some(row) = self.selected_row() {
                 self.detail = Some(render_change(&row.change, self.entity_context_mode));
             } else {
                 self.detail = None;
             }
-            self.detail_hunk_index = 0;
-            self.detail_scroll = 0;
+            let hunk_count = self.hunk_positions().len();
+            self.detail_hunk_index = prior_hunk_index.min(hunk_count.saturating_sub(1));
+            self.jump_to_hunk();
         }
     }
 
     fn next_hunk(&mut self) {
+        if self.mode == Mode::Split {
+            self.sync_active_selection_detail();
+        }
         let hunk_count = self.hunk_positions().len();
         if hunk_count == 0 {
             return;
@@ -719,6 +898,9 @@ impl AppState {
     }
 
     fn previous_hunk(&mut self) {
+        if self.mode == Mode::Split {
+            self.sync_active_selection_detail();
+        }
         if self.hunk_positions().is_empty() {
             return;
         }
@@ -736,6 +918,14 @@ impl AppState {
         };
 
         self.detail_scroll = line;
+    }
+
+    fn sync_active_selection_detail(&mut self) {
+        if let Some(row) = self.selected_row() {
+            self.detail = Some(render_change(&row.change, self.entity_context_mode));
+        } else {
+            self.detail = None;
+        }
     }
 
     fn scroll_page_down(&mut self) {
@@ -1106,6 +1296,45 @@ mod tests {
     }
 
     #[test]
+    fn list_mouse_scroll_moves_selection() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_list_mouse_scroll(true);
+        assert_eq!(app.selected(), 1);
+        app.handle_list_mouse_scroll(true);
+        assert_eq!(app.selected(), 1);
+        app.handle_list_mouse_scroll(false);
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn list_click_selects_visible_entity_and_ignores_out_of_bounds() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_list_click(1);
+        assert_eq!(app.selected(), 1);
+
+        app.handle_list_click(99);
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn list_mouse_handlers_noop_outside_list_mode() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_list_mouse_scroll(true);
+        app.handle_list_click(1);
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
     fn rows_include_added_and_removed_counts() {
         let app = app();
         assert_eq!(app.rows()[0].added_lines, 2);
@@ -1249,48 +1478,49 @@ mod tests {
     }
 
     #[test]
-    fn e_key_toggles_entity_context_mode_in_detail_and_resets_position() {
+    fn e_key_toggles_entity_context_mode_in_detail_and_preserves_selected_hunk() {
         let mut app = app();
         app.set_viewport(120, 12);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert!(app.detail_scroll() > 0);
         assert!(app.detail_hunk_index() > 0);
+        let prior_hunk_index = app.detail_hunk_index();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
-        assert_eq!(app.detail_hunk_index(), 0);
-        assert_eq!(app.detail_scroll(), 0);
+        assert_eq!(app.detail_hunk_index(), prior_hunk_index);
+        assert!(app.detail_scroll() > 0);
         assert_eq!(app.mode(), Mode::Detail);
     }
 
     #[test]
-    fn e_key_toggle_round_trip_in_detail_resets_position_each_time() {
+    fn e_key_toggle_round_trip_in_detail_preserves_selected_hunk_each_time() {
         let mut app = app();
         app.set_viewport(120, 12);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert!(app.detail_hunk_index() > 0);
-        assert!(app.detail_scroll() > 0);
+        let prior_hunk_index = app.detail_hunk_index();
+        assert!(prior_hunk_index > 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
-        assert_eq!(app.detail_hunk_index(), 0);
-        assert_eq!(app.detail_scroll(), 0);
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert!(app.detail_hunk_index() > 0);
+        assert_eq!(app.detail_hunk_index(), prior_hunk_index);
         assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let restored_hunk_index = app.detail_hunk_index();
+        assert!(restored_hunk_index > 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Hunk);
-        assert_eq!(app.detail_hunk_index(), 0);
-        assert_eq!(app.detail_scroll(), 0);
+        assert_eq!(app.detail_hunk_index(), restored_hunk_index);
+        assert!(app.detail_scroll() > 0);
     }
 
     #[test]
@@ -1361,8 +1591,8 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
-        assert_eq!(app.detail_scroll(), 0);
         assert_eq!(app.detail_hunk_index(), 0);
+        assert!(app.detail_scroll() > 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert_eq!(app.detail_hunk_index(), 1);
@@ -1378,7 +1608,7 @@ mod tests {
         assert!(unified_first_anchor_scroll < unified_second_anchor_scroll);
         assert!(unified_first_anchor_scroll > 0);
 
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::SideBySide);
         assert_eq!(app.detail_hunk_index(), 0);
         let side_first_anchor_scroll = app.detail_scroll();
@@ -1442,19 +1672,19 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_requested_view_in_detail_mode() {
+    fn s_toggles_requested_view_in_detail_mode() {
         let mut app = app();
         app.set_viewport(200, 40);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::Unified);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::SideBySide);
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::Unified);
     }
 
     #[test]
-    fn tab_toggles_requested_view_in_split_mode_without_mutating_detail_cursor_state() {
+    fn s_toggles_requested_view_in_split_mode_without_mutating_detail_cursor_state() {
         let mut app = app();
         app.set_viewport(200, 40);
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
@@ -1463,30 +1693,63 @@ mod tests {
         app.detail_hunk_index = 2;
         assert_eq!(app.effective_view(), DiffView::Unified);
 
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::SideBySide);
         assert_eq!(app.detail_scroll(), 7);
         assert_eq!(app.detail_hunk_index(), 2);
 
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.effective_view(), DiffView::Unified);
         assert_eq!(app.detail_scroll(), 7);
         assert_eq!(app.detail_hunk_index(), 2);
     }
 
     #[test]
-    fn split_mode_hunk_and_paging_keys_are_noop() {
+    fn tab_toggles_split_focus_and_up_down_follow_active_pane() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn split_mode_hunk_keys_navigate_preview_and_paging_left_right_stay_noop() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
 
-        app.detail_scroll = 5;
-        app.detail_hunk_index = 3;
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let hunk_after_next = app.detail_hunk_index();
+        let scroll_after_next = app.detail_scroll();
+        assert!(hunk_after_next > 0);
+        assert!(scroll_after_next > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
         let baseline_selected = app.selected();
+        app.detail_scroll = 5;
+        app.detail_hunk_index = 1;
 
         for key in [
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
@@ -1496,8 +1759,120 @@ mod tests {
             assert_eq!(app.mode(), Mode::Split);
             assert_eq!(app.selected(), baseline_selected);
             assert_eq!(app.detail_scroll(), 5);
-            assert_eq!(app.detail_hunk_index(), 3);
+            assert_eq!(app.detail_hunk_index(), 1);
         }
+    }
+
+    #[test]
+    fn split_mouse_scroll_on_sidebar_moves_selection() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_split_mouse_scroll(false, true);
+        assert_eq!(app.selected(), 1);
+
+        app.handle_split_mouse_scroll(false, false);
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn split_sidebar_navigation_does_not_wrap_at_bounds() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
+        app.handle_split_mouse_scroll(false, false);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        let last = app.selected();
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), last);
+        app.handle_split_mouse_scroll(false, true);
+        assert_eq!(app.selected(), last);
+    }
+
+    #[test]
+    fn split_narrow_fallback_forces_sidebar_focus_for_navigation() {
+        let mut app = app();
+        app.set_viewport(200, 40);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
+        assert!(app.detail_scroll() > 0);
+
+        app.set_viewport(70, 40);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn split_mouse_scroll_on_preview_scrolls_preview_without_changing_selection() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        let baseline_selected = app.selected();
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_split_mouse_scroll(true, true);
+        assert_eq!(app.selected(), baseline_selected);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_split_mouse_scroll(true, false);
+        assert_eq!(app.selected(), baseline_selected);
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn split_mouse_scroll_noops_outside_split_mode() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_split_mouse_scroll(false, true);
+        app.handle_split_mouse_scroll(true, true);
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn split_sidebar_click_selects_entity_and_restores_sidebar_focus() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.detail_scroll() > 0);
+        let preview_scroll = app.detail_scroll();
+
+        app.handle_split_sidebar_click(1);
+        assert_eq!(app.selected(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.detail_scroll(), preview_scroll);
+    }
+
+    #[test]
+    fn split_sidebar_click_ignores_out_of_bounds_selection() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 0);
+
+        app.handle_split_sidebar_click(99);
+        assert_eq!(app.selected(), 0);
     }
 
     #[test]

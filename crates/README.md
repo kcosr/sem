@@ -41,7 +41,7 @@ sem impact validateToken --file-exts .py
 
 `sem diff --tui`:
 
-- `↑/↓` or `j/k`: selection in `list`/`split`; line scrolling in `detail`
+- `↑/↓` or `j/k`: selection in `list`; in `split`, move focused pane (`Tab` toggles sidebar/preview focus); line scrolling in `detail`
 - `Space`: toggle reviewed state on selected/opened entity
 - `r`: cycle review filter (`all` -> `unreviewed` -> `reviewed`)
 - `v`: cycle views (`list` -> `split` -> `detail` -> `list`)
@@ -50,8 +50,9 @@ sem impact validateToken --file-exts .py
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
 - `e`: toggle `hunk` / `entity` detail context mode
-- `Tab`: unified vs side-by-side toggle in `detail` and split preview
-- `n/p`: hunk navigation (detail-only; no-op in split)
+- `Tab`: toggle split focus between sidebar and preview
+- `s`: unified vs side-by-side toggle in `detail` and split preview
+- `n/p`: hunk navigation (works in detail and split preview)
 - `PageUp/PageDown`: page scrolling in detail mode (no-op in split)
 - `g/G`: top/bottom jump in active mode
 - `?`: help overlay
