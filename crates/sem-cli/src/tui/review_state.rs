@@ -42,6 +42,35 @@ impl ReviewFilter {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersistedViewMode {
+    List,
+    Split,
+    Detail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PersistedDiffView {
+    Unified,
+    SideBySide,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersistedEntityContextMode {
+    Hunk,
+    Entity,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReviewStateUiPrefs {
+    pub view_mode: Option<PersistedViewMode>,
+    pub diff_view: Option<PersistedDiffView>,
+    pub entity_context_mode: Option<PersistedEntityContextMode>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReviewIdentity {
     pub logical_entity_key: String,
@@ -51,6 +80,7 @@ pub struct ReviewIdentity {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewStateData {
     pub filter: ReviewFilter,
+    pub ui_prefs: ReviewStateUiPrefs,
     pub records: HashMap<ReviewIdentity, String>,
 }
 
@@ -87,6 +117,12 @@ struct PersistedReviewState {
 #[serde(rename_all = "camelCase")]
 struct PersistedUiPrefs {
     review_filter: ReviewFilter,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view_mode: Option<PersistedViewMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diff_view: Option<PersistedDiffView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entity_context_mode: Option<PersistedEntityContextMode>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -178,12 +214,24 @@ impl ReviewStateStore {
         }
 
         let (records, compacted) = compact_records(persisted.review_records);
-        let filter = persisted
-            .ui_prefs
-            .map(|prefs| prefs.review_filter)
-            .unwrap_or_default();
+        let (filter, ui_prefs) = if let Some(prefs) = persisted.ui_prefs {
+            (
+                prefs.review_filter,
+                ReviewStateUiPrefs {
+                    view_mode: prefs.view_mode,
+                    diff_view: prefs.diff_view,
+                    entity_context_mode: prefs.entity_context_mode,
+                },
+            )
+        } else {
+            (ReviewFilter::default(), ReviewStateUiPrefs::default())
+        };
 
-        result.state = ReviewStateData { filter, records };
+        result.state = ReviewStateData {
+            filter,
+            ui_prefs,
+            records,
+        };
         result.compacted = compacted;
         result
     }
@@ -223,6 +271,9 @@ impl ReviewStateStore {
             repo_id: self.repo_id.clone(),
             ui_prefs: Some(PersistedUiPrefs {
                 review_filter: state.filter,
+                view_mode: state.ui_prefs.view_mode,
+                diff_view: state.ui_prefs.diff_view,
+                entity_context_mode: state.ui_prefs.entity_context_mode,
             }),
             review_records,
         };
@@ -676,6 +727,11 @@ mod tests {
 
         let mut state = ReviewStateData {
             filter: ReviewFilter::Unreviewed,
+            ui_prefs: ReviewStateUiPrefs {
+                view_mode: Some(PersistedViewMode::Split),
+                diff_view: Some(PersistedDiffView::SideBySide),
+                entity_context_mode: Some(PersistedEntityContextMode::Entity),
+            },
             records: HashMap::new(),
         };
         state.records.insert(

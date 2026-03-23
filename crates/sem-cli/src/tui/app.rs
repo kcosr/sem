@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use super::review_state::{
     build_logical_entity_key, build_target_content_hash, current_updated_at,
-    endpoint_supports_review_hash, ReviewFilter, ReviewIdentity, ReviewStateData,
+    endpoint_supports_review_hash, PersistedDiffView, PersistedEntityContextMode,
+    PersistedViewMode, ReviewFilter, ReviewIdentity, ReviewStateData, ReviewStateUiPrefs,
 };
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
@@ -240,11 +241,27 @@ impl AppState {
     }
 
     pub fn apply_review_state(&mut self, state: ReviewStateData) {
+        let ReviewStateData {
+            filter,
+            ui_prefs,
+            records,
+        } = state;
         let prior_selected = self.selected;
-        self.review_filter = state.filter;
-        self.reviewed_records = state.records;
-        self.review_state_dirty = false;
+        self.review_filter = filter;
+        self.reviewed_records = records;
         self.realign_selection_after_visibility_change(prior_selected);
+
+        if let Some(view) = ui_prefs.diff_view {
+            self.requested_view = from_persisted_diff_view(view);
+        }
+        if let Some(context_mode) = ui_prefs.entity_context_mode {
+            self.entity_context_mode = from_persisted_entity_context_mode(context_mode);
+        }
+        if let Some(view_mode) = ui_prefs.view_mode {
+            self.apply_persisted_view_mode(from_persisted_view_mode(view_mode));
+        }
+
+        self.review_state_dirty = false;
     }
 
     pub fn set_review_status_message(&mut self, message: Option<String>) {
@@ -267,6 +284,13 @@ impl AppState {
     pub fn review_state_snapshot(&self) -> ReviewStateData {
         ReviewStateData {
             filter: self.review_filter,
+            ui_prefs: ReviewStateUiPrefs {
+                view_mode: Some(to_persisted_view_mode(self.mode)),
+                diff_view: Some(to_persisted_diff_view(self.requested_view)),
+                entity_context_mode: Some(to_persisted_entity_context_mode(
+                    self.entity_context_mode,
+                )),
+            },
             records: self.reviewed_records.clone(),
         }
     }
@@ -711,6 +735,7 @@ impl AppState {
                 self.detail = None;
             }
         }
+        self.review_state_dirty = true;
     }
 
     fn move_up(&mut self) {
@@ -742,6 +767,7 @@ impl AppState {
         self.last_non_detail_mode = self.current_non_detail_mode();
         self.mode = Mode::Detail;
         self.refresh_detail();
+        self.review_state_dirty = true;
     }
 
     fn next_entity(&mut self) {
@@ -785,6 +811,7 @@ impl AppState {
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
         self.detail = None;
+        self.review_state_dirty = true;
     }
 
     fn toggle_view(&mut self) {
@@ -792,6 +819,7 @@ impl AppState {
             DiffView::Unified => DiffView::SideBySide,
             DiffView::SideBySide => DiffView::Unified,
         };
+        self.review_state_dirty = true;
 
         if self.mode == Mode::Detail {
             self.detail_hunk_index = 0;
@@ -869,6 +897,7 @@ impl AppState {
 
     fn toggle_entity_context_mode(&mut self) {
         self.entity_context_mode = self.entity_context_mode.toggled();
+        self.review_state_dirty = true;
 
         if self.mode == Mode::Detail {
             let prior_hunk_index = self.detail_hunk_index;
@@ -1108,6 +1137,89 @@ impl AppState {
             Mode::Split => Mode::Split,
             Mode::Detail => Mode::List,
         }
+    }
+
+    fn apply_persisted_view_mode(&mut self, mode: Mode) {
+        match mode {
+            Mode::List => {
+                self.mode = Mode::List;
+                self.last_non_detail_mode = Mode::List;
+                self.split_focus = SplitFocus::Sidebar;
+                self.detail_scroll = 0;
+                self.detail_hunk_index = 0;
+                self.detail = None;
+            }
+            Mode::Split => {
+                self.mode = Mode::Split;
+                self.last_non_detail_mode = Mode::Split;
+                self.split_focus = SplitFocus::Sidebar;
+                self.detail_scroll = 0;
+                self.detail_hunk_index = 0;
+                self.detail = None;
+                if !self.split_preview_available() {
+                    self.split_focus = SplitFocus::Sidebar;
+                }
+            }
+            Mode::Detail => {
+                if self.visible_row_indices().is_empty() {
+                    self.mode = Mode::List;
+                    self.last_non_detail_mode = Mode::List;
+                    self.split_focus = SplitFocus::Sidebar;
+                    self.detail_scroll = 0;
+                    self.detail_hunk_index = 0;
+                    self.detail = None;
+                    return;
+                }
+                self.mode = Mode::Detail;
+                self.last_non_detail_mode = Mode::List;
+                self.split_focus = SplitFocus::Sidebar;
+                self.refresh_detail();
+            }
+        }
+    }
+}
+
+fn to_persisted_view_mode(mode: Mode) -> PersistedViewMode {
+    match mode {
+        Mode::List => PersistedViewMode::List,
+        Mode::Split => PersistedViewMode::Split,
+        Mode::Detail => PersistedViewMode::Detail,
+    }
+}
+
+fn from_persisted_view_mode(mode: PersistedViewMode) -> Mode {
+    match mode {
+        PersistedViewMode::List => Mode::List,
+        PersistedViewMode::Split => Mode::Split,
+        PersistedViewMode::Detail => Mode::Detail,
+    }
+}
+
+fn to_persisted_diff_view(view: DiffView) -> PersistedDiffView {
+    match view {
+        DiffView::Unified => PersistedDiffView::Unified,
+        DiffView::SideBySide => PersistedDiffView::SideBySide,
+    }
+}
+
+fn from_persisted_diff_view(view: PersistedDiffView) -> DiffView {
+    match view {
+        PersistedDiffView::Unified => DiffView::Unified,
+        PersistedDiffView::SideBySide => DiffView::SideBySide,
+    }
+}
+
+fn to_persisted_entity_context_mode(mode: EntityContextMode) -> PersistedEntityContextMode {
+    match mode {
+        EntityContextMode::Hunk => PersistedEntityContextMode::Hunk,
+        EntityContextMode::Entity => PersistedEntityContextMode::Entity,
+    }
+}
+
+fn from_persisted_entity_context_mode(mode: PersistedEntityContextMode) -> EntityContextMode {
+    match mode {
+        PersistedEntityContextMode::Hunk => EntityContextMode::Hunk,
+        PersistedEntityContextMode::Entity => EntityContextMode::Entity,
     }
 }
 
@@ -2302,6 +2414,47 @@ mod tests {
             .take_review_state_dirty_snapshot()
             .expect("filter cycle should mark review state dirty");
         assert_eq!(snapshot.filter, ReviewFilter::Unreviewed);
+    }
+
+    #[test]
+    fn review_state_snapshot_includes_view_and_context_preferences() {
+        let mut app = app();
+        app.set_viewport(200, 40);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        let snapshot = app.review_state_snapshot();
+        assert_eq!(snapshot.ui_prefs.view_mode, Some(PersistedViewMode::Split));
+        assert_eq!(
+            snapshot.ui_prefs.diff_view,
+            Some(PersistedDiffView::SideBySide)
+        );
+        assert_eq!(
+            snapshot.ui_prefs.entity_context_mode,
+            Some(PersistedEntityContextMode::Entity)
+        );
+    }
+
+    #[test]
+    fn apply_review_state_restores_view_and_context_preferences() {
+        let mut app = app();
+        app.set_viewport(200, 40);
+
+        app.apply_review_state(ReviewStateData {
+            filter: ReviewFilter::All,
+            ui_prefs: ReviewStateUiPrefs {
+                view_mode: Some(PersistedViewMode::Detail),
+                diff_view: Some(PersistedDiffView::SideBySide),
+                entity_context_mode: Some(PersistedEntityContextMode::Entity),
+            },
+            records: HashMap::new(),
+        });
+
+        assert_eq!(app.mode(), Mode::Detail);
+        assert_eq!(app.effective_view(), DiffView::SideBySide);
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert!(!app.unified_lines().is_empty());
     }
 
     #[test]
