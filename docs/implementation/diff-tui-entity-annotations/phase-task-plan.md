@@ -29,7 +29,7 @@ Deliverables:
 3. Lock keybindings: `a` (add/replace), `D` (delete), `A` (cycle annotation filter).
 4. Lock annotation filter: `All -> Annotated -> Unannotated` cycle, composing with review filter.
 5. Lock persistence shape: `annotations` array in existing `.sem/tui-review-state.json`, optional field, no version bump.
-6. Lock display contract: `[*]` badge (hash match or unavailable), `[~]` badge (hash divergent), "different version" label in detail/preview.
+6. Lock display contract: `[*]` badge (hash match or unavailable), `[~]` badge (hash divergent), and a dedicated annotation panel in detail/preview with a "Different Version" title variant when hashes diverge.
 7. Lock input mode contract: single-line, 256-char max, Enter confirms, Esc cancels, whitespace-only treated as cancel.
 8. Lock stepping-during-input behavior: cancel input on snapshot arrival.
 9. Lock annotatability rule: entity is annotatable if `logicalEntityKey` resolves, regardless of hash material availability.
@@ -53,7 +53,8 @@ Deliverables:
 7. Update `ReviewStateStore::save()` to serialize annotations array sorted by `logicalEntityKey`.
 8. Unit tests:
    - Annotation persistence round-trip (save then load).
-   - Load file with annotations but no review records and vice versa.
+   - Load file with populated annotations and empty `reviewRecords`.
+   - Load file with populated review records and missing or empty `annotations`.
    - Load file without `annotations` field (backward compat, defaults to empty).
    - Duplicate `logicalEntityKey` on load: last-writer-wins.
    - `AnnotationFilter` cycle covers all 3 states.
@@ -84,7 +85,7 @@ Deliverables:
 10. Add `begin_annotation_input()`: resolve selected row's key, pre-fill existing text, enter input mode.
 11. Add `confirm_annotation()`: validate non-whitespace, store annotation with timestamps and provenance hash, mark dirty, exit input mode. On replace: preserve `createdAt`, update `updatedAt` and `contentHashAtCreation`.
 12. Add `cancel_annotation()`: discard input, exit input mode.
-13. Add `delete_annotation()`: remove from HashMap if present, mark dirty, show status message.
+13. Add `delete_annotation()`: arm delete on first `D`, confirm delete on second `D`, cancel on `Esc`, and remove from HashMap only on confirmation.
 14. Add `cycle_annotation_filter()`: cycle filter, mark dirty, realign selection.
 15. Add accessors: `is_row_annotated()`, `row_annotation_text()`, `row_annotation_hash_matches()`.
 16. Extend `visible_row_indices()` to apply annotation filter predicate alongside review filter.
@@ -131,9 +132,9 @@ Deliverables:
    - Distinct background color to indicate input mode.
 8. Render `[*]` / `[~]` badge in list mode entity rows for annotated entities.
 9. Render `[*]` / `[~]` badge in split mode sidebar for annotated entities.
-10. Render annotation text block above diff content in detail mode and split preview:
-    - Hash match or unavailable: `note: <text>` in accent color (yellow or cyan).
-    - Hash divergent: `note (different version): <text>` in dimmer color.
+10. Render a dedicated annotation panel above diff content in detail mode and split preview:
+    - Hash match or unavailable: panel title `Annotation`, body is raw annotation text.
+    - Hash divergent: panel title `Annotation (Different Version)` in dimmer styling.
 11. Render annotation filter state in footer: `A: all|annotated|unannotated`.
 12. Update help overlay text with `a`, `D`, `A` keybinding descriptions.
 13. Unit/render tests:
@@ -142,7 +143,7 @@ Deliverables:
     - Whitespace-only enter treated as cancel.
     - Mouse events suppressed during input mode.
     - Badge rendering: `[*]` for hash-match, `[~]` for hash-divergent, no badge for unannotated.
-    - Annotation text block rendering in detail view.
+    - Annotation panel rendering in detail view.
     - Footer annotation filter cell renders correct token.
 
 Acceptance:

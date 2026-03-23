@@ -6,8 +6,9 @@ use std::collections::HashMap;
 
 use super::review_state::{
     build_logical_entity_key, build_target_content_hash, current_updated_at,
-    endpoint_supports_review_hash, PersistedDiffView, PersistedEntityContextMode,
-    PersistedViewMode, ReviewFilter, ReviewIdentity, ReviewStateData, ReviewStateUiPrefs,
+    endpoint_supports_review_hash, Annotation, AnnotationFilter, PersistedDiffView,
+    PersistedEntityContextMode, PersistedViewMode, ReviewFilter, ReviewIdentity, ReviewStateData,
+    ReviewStateUiPrefs,
 };
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
@@ -18,6 +19,7 @@ use super::detail::{render_change, EntityContextMode, LineKind, RenderedDiff, Si
 
 const MIN_SIDE_BY_SIDE_WIDTH: u16 = 120;
 const MIN_SPLIT_PREVIEW_WIDTH: u16 = 80;
+const MAX_ANNOTATION_LENGTH: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct EntityRow {
@@ -52,6 +54,14 @@ impl SplitFocus {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnnotationInputState {
+    text: String,
+    cursor_position: usize,
+    target_logical_entity_key: String,
+    target_content_hash: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
@@ -79,8 +89,13 @@ pub struct AppState {
     commit_status_message: Option<String>,
     pending_navigation_request: Option<PendingNavigationRequest>,
     review_filter: ReviewFilter,
+    annotation_filter: AnnotationFilter,
     reviewed_records: HashMap<ReviewIdentity, String>,
+    annotations: HashMap<String, Annotation>,
     row_review_identities: Vec<Option<ReviewIdentity>>,
+    row_annotation_keys: Vec<Option<String>>,
+    annotation_input: Option<AnnotationInputState>,
+    pending_annotation_delete_key: Option<String>,
     review_status_message: Option<String>,
     review_state_dirty: bool,
 }
@@ -96,7 +111,7 @@ impl AppState {
         let rows = Self::rows_from_diff_result(result);
         let row_count = rows.len();
 
-        Self {
+        let mut app = Self {
             rows,
             selected: 0,
             mode: Mode::List,
@@ -122,11 +137,18 @@ impl AppState {
             commit_status_message: None,
             pending_navigation_request: None,
             review_filter: ReviewFilter::All,
+            annotation_filter: AnnotationFilter::All,
             reviewed_records: HashMap::new(),
+            annotations: HashMap::new(),
             row_review_identities: vec![None; row_count],
+            row_annotation_keys: vec![None; row_count],
+            annotation_input: None,
+            pending_annotation_delete_key: None,
             review_status_message: None,
             review_state_dirty: false,
-        }
+        };
+        app.recompute_annotation_keys();
+        app
     }
 
     fn rows_from_diff_result(result: &DiffResult) -> Vec<EntityRow> {
@@ -198,6 +220,7 @@ impl AppState {
         };
         self.recompute_comparison();
         self.recompute_review_identities();
+        self.recompute_annotation_keys();
     }
 
     pub fn commit_source_mode(&self) -> TuiSourceMode {
@@ -232,6 +255,14 @@ impl AppState {
         self.review_filter
     }
 
+    pub fn annotation_filter(&self) -> AnnotationFilter {
+        self.annotation_filter
+    }
+
+    pub fn annotation_input_active(&self) -> bool {
+        self.annotation_input.is_some()
+    }
+
     pub fn is_row_reviewed(&self, row_index: usize) -> bool {
         self.row_review_identities
             .get(row_index)
@@ -243,14 +274,21 @@ impl AppState {
     pub fn apply_review_state(&mut self, state: ReviewStateData) {
         let ReviewStateData {
             filter,
+            annotation_filter,
             ui_prefs,
+            annotations,
             records,
         } = state;
         let prior_selected = self.selected;
         self.review_filter = filter;
+        self.annotation_filter = annotation_filter;
         self.reviewed_records = records;
+        self.annotations = annotations;
         self.realign_selection_after_visibility_change(prior_selected);
 
+        if let Some(annotation_filter) = ui_prefs.annotation_filter {
+            self.annotation_filter = annotation_filter;
+        }
         if let Some(view) = ui_prefs.diff_view {
             self.requested_view = from_persisted_diff_view(view);
         }
@@ -284,13 +322,16 @@ impl AppState {
     pub fn review_state_snapshot(&self) -> ReviewStateData {
         ReviewStateData {
             filter: self.review_filter,
+            annotation_filter: self.annotation_filter,
             ui_prefs: ReviewStateUiPrefs {
+                annotation_filter: Some(self.annotation_filter),
                 view_mode: Some(to_persisted_view_mode(self.mode)),
                 diff_view: Some(to_persisted_diff_view(self.requested_view)),
                 entity_context_mode: Some(to_persisted_entity_context_mode(
                     self.entity_context_mode,
                 )),
             },
+            annotations: self.annotations.clone(),
             records: self.reviewed_records.clone(),
         }
     }
@@ -333,8 +374,183 @@ impl AppState {
         }
     }
 
+    pub fn cycle_annotation_filter(&mut self) {
+        let prior_selected = self.selected;
+        self.annotation_filter = self.annotation_filter.cycle();
+        self.review_state_dirty = true;
+        self.realign_selection_after_visibility_change(prior_selected);
+        if self.mode == Mode::Detail {
+            self.refresh_detail();
+        }
+    }
+
     pub fn set_commit_loading(&mut self, loading: bool) {
         self.commit_loading = loading;
+    }
+
+    pub fn is_row_annotated(&self, row_index: usize) -> bool {
+        self.row_annotation_keys
+            .get(row_index)
+            .and_then(|key| key.as_ref())
+            .map(|key| self.annotations.contains_key(key))
+            .unwrap_or(false)
+    }
+
+    pub fn row_annotation_text(&self, row_index: usize) -> Option<&str> {
+        self.row_annotation_keys
+            .get(row_index)
+            .and_then(|key| key.as_ref())
+            .and_then(|key| self.annotations.get(key))
+            .map(|annotation| annotation.text.as_str())
+    }
+
+    pub fn row_annotation_hash_matches(&self, row_index: usize) -> bool {
+        let Some(logical_entity_key) = self
+            .row_annotation_keys
+            .get(row_index)
+            .and_then(|key| key.as_ref())
+        else {
+            return true;
+        };
+        let Some(annotation) = self.annotations.get(logical_entity_key) else {
+            return true;
+        };
+        let Some(row) = self.rows.get(row_index) else {
+            return true;
+        };
+        let current_hash = build_target_content_hash(&row.change);
+        match (
+            annotation.content_hash_at_creation.as_deref(),
+            current_hash.as_deref(),
+        ) {
+            (Some(annotation_hash), Some(current_hash)) => annotation_hash == current_hash,
+            _ => true,
+        }
+    }
+
+    pub fn annotation_input_text(&self) -> Option<&str> {
+        self.annotation_input
+            .as_ref()
+            .map(|input| input.text.as_str())
+    }
+
+    pub fn annotation_input_cursor_position(&self) -> Option<usize> {
+        self.annotation_input
+            .as_ref()
+            .map(|input| input.cursor_position)
+    }
+
+    pub fn selected_row_annotation(&self) -> Option<(&str, bool)> {
+        let row_index = self.selected_row_index()?;
+        let text = self.row_annotation_text(row_index)?;
+        Some((text, self.row_annotation_hash_matches(row_index)))
+    }
+
+    fn selected_row_annotation_key(&self) -> Option<String> {
+        let row_index = self.selected_row_index()?;
+        self.row_annotation_keys
+            .get(row_index)
+            .and_then(|key| key.clone())
+    }
+
+    fn begin_annotation_input(&mut self) {
+        let Some(row_index) = self.selected_row_index() else {
+            self.review_status_message =
+                Some("Annotation unavailable for current entity".to_string());
+            return;
+        };
+        let Some(logical_entity_key) = self
+            .row_annotation_keys
+            .get(row_index)
+            .and_then(|key| key.clone())
+        else {
+            self.review_status_message =
+                Some("Annotation unavailable for current entity".to_string());
+            return;
+        };
+
+        let existing_text = self
+            .annotations
+            .get(&logical_entity_key)
+            .map(|annotation| annotation.text.clone())
+            .unwrap_or_default();
+        let target_content_hash = self
+            .rows
+            .get(row_index)
+            .and_then(|row| build_target_content_hash(&row.change));
+        self.annotation_input = Some(AnnotationInputState {
+            cursor_position: existing_text.len(),
+            text: existing_text,
+            target_logical_entity_key: logical_entity_key,
+            target_content_hash,
+        });
+        self.pending_annotation_delete_key = None;
+        self.review_status_message = None;
+    }
+
+    fn confirm_annotation(&mut self) -> bool {
+        let Some(input) = self.annotation_input.take() else {
+            return false;
+        };
+
+        if input.text.trim().is_empty() {
+            return false;
+        }
+
+        let updated_at = current_updated_at();
+        let created_at = self
+            .annotations
+            .get(&input.target_logical_entity_key)
+            .map(|annotation| annotation.created_at.clone())
+            .unwrap_or_else(|| updated_at.clone());
+
+        self.annotations.insert(
+            input.target_logical_entity_key,
+            Annotation {
+                text: input.text,
+                content_hash_at_creation: input.target_content_hash,
+                created_at,
+                updated_at,
+            },
+        );
+        self.review_state_dirty = true;
+        self.review_status_message = None;
+        true
+    }
+
+    fn cancel_annotation(&mut self) {
+        self.annotation_input = None;
+    }
+
+    fn delete_annotation(&mut self) -> bool {
+        let Some(logical_entity_key) = self.selected_row_annotation_key() else {
+            return false;
+        };
+        if !self.annotations.contains_key(&logical_entity_key) {
+            self.pending_annotation_delete_key = None;
+            return false;
+        }
+
+        if self.pending_annotation_delete_key.as_deref() != Some(logical_entity_key.as_str()) {
+            self.pending_annotation_delete_key = Some(logical_entity_key);
+            self.review_status_message =
+                Some("Press D again to delete annotation; Esc cancels".to_string());
+            return false;
+        }
+
+        if self.annotations.remove(&logical_entity_key).is_some() {
+            self.pending_annotation_delete_key = None;
+            self.review_state_dirty = true;
+            self.review_status_message = Some("annotation removed".to_string());
+            return true;
+        }
+
+        false
+    }
+
+    fn cancel_annotation_delete_confirmation(&mut self) {
+        self.pending_annotation_delete_key = None;
+        self.review_status_message = Some("annotation delete cancelled".to_string());
     }
 
     pub fn comparison_line(&self) -> Option<(String, String, String, String)> {
@@ -424,12 +640,18 @@ impl AppState {
     }
 
     fn apply_commit_snapshot(&mut self, snapshot: CommitSnapshot) {
+        if self.annotation_input.take().is_some() {
+            self.review_status_message =
+                Some("annotation input cancelled: commit step applied".to_string());
+        }
+        self.pending_annotation_delete_key = None;
         self.commit_cursor = Some(snapshot.cursor);
         self.step_mode = snapshot.mode;
         self.cumulative_base_endpoint_id = snapshot.base_endpoint_id;
         self.comparison = Some(snapshot.comparison);
         self.rows = Self::rows_from_diff_result(&snapshot.result);
         self.recompute_review_identities();
+        self.recompute_annotation_keys();
         self.selected = 0;
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
@@ -614,6 +836,16 @@ impl AppState {
             return;
         }
 
+        if self.annotation_input.is_some() {
+            self.handle_annotation_input_key(key);
+            return;
+        }
+
+        if key.code == KeyCode::Esc && self.pending_annotation_delete_key.is_some() {
+            self.cancel_annotation_delete_confirmation();
+            return;
+        }
+
         if key.code == KeyCode::Char('v') {
             self.cycle_view_mode();
             return;
@@ -630,6 +862,11 @@ impl AppState {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('a') => self.begin_annotation_input(),
+            KeyCode::Char('A') => self.cycle_annotation_filter(),
+            KeyCode::Char('D') => {
+                let _ = self.delete_annotation();
+            }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
@@ -656,6 +893,11 @@ impl AppState {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('a') => self.begin_annotation_input(),
+            KeyCode::Char('A') => self.cycle_annotation_filter(),
+            KeyCode::Char('D') => {
+                let _ = self.delete_annotation();
+            }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
@@ -686,6 +928,11 @@ impl AppState {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('a') => self.begin_annotation_input(),
+            KeyCode::Char('A') => self.cycle_annotation_filter(),
+            KeyCode::Char('D') => {
+                let _ = self.delete_annotation();
+            }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
@@ -707,6 +954,28 @@ impl AppState {
             KeyCode::Char('g') => self.detail_scroll = 0,
             KeyCode::Char('G') => {
                 self.detail_scroll = self.max_scroll();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_annotation_input_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                self.confirm_annotation();
+            }
+            KeyCode::Esc => self.cancel_annotation(),
+            KeyCode::Left => self.move_annotation_cursor_left(),
+            KeyCode::Right => self.move_annotation_cursor_right(),
+            KeyCode::Home => self.move_annotation_cursor_home(),
+            KeyCode::End => self.move_annotation_cursor_end(),
+            KeyCode::Backspace => self.delete_annotation_char_before_cursor(),
+            KeyCode::Delete => self.delete_annotation_char_at_cursor(),
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.insert_annotation_char(character);
             }
             _ => {}
         }
@@ -1008,11 +1277,17 @@ impl AppState {
     }
 
     fn row_matches_filter(&self, row_index: usize) -> bool {
-        match self.review_filter {
+        let review_matches = match self.review_filter {
             ReviewFilter::All => true,
             ReviewFilter::Unreviewed => !self.is_row_reviewed(row_index),
             ReviewFilter::Reviewed => self.is_row_reviewed(row_index),
-        }
+        };
+        let annotation_matches = match self.annotation_filter {
+            AnnotationFilter::All => true,
+            AnnotationFilter::Annotated => self.is_row_annotated(row_index),
+            AnnotationFilter::Unannotated => !self.is_row_annotated(row_index),
+        };
+        review_matches && annotation_matches
     }
 
     fn realign_selection_after_visibility_change(&mut self, prior_selected: usize) {
@@ -1114,6 +1389,88 @@ impl AppState {
         }
 
         self.realign_selection_after_visibility_change(prior_selected);
+    }
+
+    fn recompute_annotation_keys(&mut self) {
+        let prior_selected = self.selected;
+        self.row_annotation_keys = vec![None; self.rows.len()];
+
+        let mut fallback_ordinals: HashMap<(String, String, String), usize> = HashMap::new();
+        for (row_index, row) in self.rows.iter().enumerate() {
+            let group_key = (
+                row.file_path.clone(),
+                row.entity_type.clone(),
+                row.entity_name.clone(),
+            );
+            let ordinal = fallback_ordinals.entry(group_key).or_insert(0);
+            *ordinal = ordinal.saturating_add(1);
+            self.row_annotation_keys[row_index] =
+                Some(build_logical_entity_key(&row.change, *ordinal));
+        }
+
+        self.realign_selection_after_visibility_change(prior_selected);
+    }
+
+    fn insert_annotation_char(&mut self, character: char) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        if input.text.chars().count() >= MAX_ANNOTATION_LENGTH {
+            return;
+        }
+        input.text.insert(input.cursor_position, character);
+        input.cursor_position += character.len_utf8();
+    }
+
+    fn move_annotation_cursor_left(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        input.cursor_position = prev_char_boundary(&input.text, input.cursor_position);
+    }
+
+    fn move_annotation_cursor_right(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        input.cursor_position = next_char_boundary(&input.text, input.cursor_position);
+    }
+
+    fn move_annotation_cursor_home(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        input.cursor_position = 0;
+    }
+
+    fn move_annotation_cursor_end(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        input.cursor_position = input.text.len();
+    }
+
+    fn delete_annotation_char_before_cursor(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        if input.cursor_position == 0 {
+            return;
+        }
+        let previous = prev_char_boundary(&input.text, input.cursor_position);
+        input.text.drain(previous..input.cursor_position);
+        input.cursor_position = previous;
+    }
+
+    fn delete_annotation_char_at_cursor(&mut self) {
+        let Some(input) = self.annotation_input.as_mut() else {
+            return;
+        };
+        if input.cursor_position >= input.text.len() {
+            return;
+        }
+        let next = next_char_boundary(&input.text, input.cursor_position);
+        input.text.drain(input.cursor_position..next);
     }
 
     fn endpoint_display_label(&self, endpoint_id: &str) -> Option<String> {
@@ -1276,6 +1633,26 @@ fn changed_line_count(text: &str) -> usize {
     newline_count.max(1)
 }
 
+fn prev_char_boundary(text: &str, index: usize) -> usize {
+    text[..index]
+        .char_indices()
+        .last()
+        .map(|(offset, _)| offset)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+
+    text[index..]
+        .char_indices()
+        .nth(1)
+        .map(|(offset, _)| index + offset)
+        .unwrap_or(text.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1387,6 +1764,12 @@ mod tests {
             snapshot: Some(snapshot),
             error: None,
             retain_previous_snapshot: false,
+        }
+    }
+
+    fn type_annotation(app: &mut AppState, text: &str) {
+        for character in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
         }
     }
 
@@ -2417,6 +2800,205 @@ mod tests {
     }
 
     #[test]
+    fn annotation_add_flow_stores_note_and_marks_persistence_dirty() {
+        let mut app = app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(app.annotation_input_active());
+        type_annotation(&mut app, "needs follow-up");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        let snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("annotation add should mark persistence dirty");
+        assert_eq!(snapshot.annotations.len(), 1);
+        assert_eq!(
+            snapshot
+                .annotations
+                .values()
+                .next()
+                .map(|annotation| annotation.text.as_str()),
+            Some("needs follow-up")
+        );
+    }
+
+    #[test]
+    fn annotation_replace_preserves_created_at() {
+        let mut app = app();
+        let logical_entity_key = app
+            .row_annotation_keys
+            .first()
+            .and_then(|key| key.clone())
+            .expect("row should have annotation key");
+        app.annotations.insert(
+            logical_entity_key.clone(),
+            Annotation {
+                text: "first".to_string(),
+                content_hash_at_creation: Some(
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                        .to_string(),
+                ),
+                created_at: "2026-03-08T20:00:00Z".to_string(),
+                updated_at: "2026-03-08T20:00:00Z".to_string(),
+            },
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.annotation_input
+            .as_mut()
+            .expect("annotation input should start")
+            .text = "second".to_string();
+        app.annotation_input
+            .as_mut()
+            .expect("annotation input should remain active")
+            .cursor_position = "second".len();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let annotation = app
+            .annotations
+            .get(&logical_entity_key)
+            .expect("annotation should exist after replace");
+        assert_eq!(annotation.text, "second");
+        assert_eq!(annotation.created_at, "2026-03-08T20:00:00Z");
+        assert_ne!(annotation.updated_at, "2026-03-08T20:00:00Z");
+    }
+
+    #[test]
+    fn whitespace_annotation_confirm_is_treated_as_cancel() {
+        let mut app = app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "   ");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.annotations.is_empty());
+        assert!(app.take_review_state_dirty_snapshot().is_none());
+    }
+
+    #[test]
+    fn annotation_delete_requires_confirmation_and_escape_cancels() {
+        let mut app = app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "needs follow-up");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        let _ = app.take_review_state_dirty_snapshot();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(
+            app.status_message(),
+            Some("Press D again to delete annotation; Esc cancels")
+        );
+        assert!(app.take_review_state_dirty_snapshot().is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(app.status_message(), Some("annotation delete cancelled"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert_eq!(app.row_annotation_text(0), None);
+        assert_eq!(app.status_message(), Some("annotation removed"));
+        assert!(
+            app.take_review_state_dirty_snapshot().is_some(),
+            "confirmed delete should mark persistence dirty"
+        );
+    }
+
+    #[test]
+    fn annotation_keys_exist_without_review_hash_support() {
+        let app = app();
+
+        assert!(app
+            .row_review_identities
+            .iter()
+            .all(|identity| identity.is_none()));
+        assert!(app.row_annotation_keys.iter().all(|key| key.is_some()));
+    }
+
+    #[test]
+    fn annotation_filter_composes_with_review_filter() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        assert!(app.toggle_selected_reviewed());
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "note");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+        assert_eq!(app.annotation_filter(), AnnotationFilter::Annotated);
+        assert_eq!(app.review_filter(), ReviewFilter::Reviewed);
+        assert!(app.visible_row_indices().is_empty());
+    }
+
+    #[test]
+    fn commit_snapshot_cancels_active_annotation_input() {
+        let mut app = app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "pending");
+        assert!(app.annotation_input_active());
+
+        let snapshot = CommitSnapshot {
+            cursor: CommitCursor {
+                endpoint_id: "working".to_string(),
+                index: 2,
+                rev_label: Some("WORKING".to_string()),
+                sha: "working".to_string(),
+                subject: "working tree".to_string(),
+                has_older: true,
+                has_newer: false,
+            },
+            result: DiffResult {
+                changes: vec![change("a.ts", "alpha", BASELINE_BEFORE, BASELINE_AFTER)],
+                file_count: 1,
+                added_count: 0,
+                modified_count: 1,
+                deleted_count: 0,
+                moved_count: 0,
+                renamed_count: 0,
+            },
+            mode: StepMode::Cumulative,
+            base_endpoint_id: Some("commit:aaaaaaa".to_string()),
+            comparison: StepComparison {
+                from_endpoint_id: "commit:aaaaaaa".to_string(),
+                to_endpoint_id: "working".to_string(),
+            },
+        };
+
+        app.apply_commit_step_response(loaded_response(snapshot));
+        assert!(!app.annotation_input_active());
+        assert_eq!(
+            app.status_message(),
+            Some("annotation input cancelled: commit step applied")
+        );
+    }
+
+    #[test]
     fn review_state_snapshot_includes_view_and_context_preferences() {
         let mut app = app();
         app.set_viewport(200, 40);
@@ -2443,11 +3025,14 @@ mod tests {
 
         app.apply_review_state(ReviewStateData {
             filter: ReviewFilter::All,
+            annotation_filter: AnnotationFilter::All,
             ui_prefs: ReviewStateUiPrefs {
+                annotation_filter: Some(AnnotationFilter::All),
                 view_mode: Some(PersistedViewMode::Detail),
                 diff_view: Some(PersistedDiffView::SideBySide),
                 entity_context_mode: Some(PersistedEntityContextMode::Entity),
             },
+            annotations: HashMap::new(),
             records: HashMap::new(),
         });
 

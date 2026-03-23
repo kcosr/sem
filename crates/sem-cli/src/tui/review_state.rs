@@ -42,6 +42,33 @@ impl ReviewFilter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnnotationFilter {
+    #[default]
+    All,
+    Annotated,
+    Unannotated,
+}
+
+impl AnnotationFilter {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::All => Self::Annotated,
+            Self::Annotated => Self::Unannotated,
+            Self::Unannotated => Self::All,
+        }
+    }
+
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Annotated => "annotated",
+            Self::Unannotated => "unannotated",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PersistedViewMode {
@@ -66,9 +93,18 @@ pub enum PersistedEntityContextMode {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReviewStateUiPrefs {
+    pub annotation_filter: Option<AnnotationFilter>,
     pub view_mode: Option<PersistedViewMode>,
     pub diff_view: Option<PersistedDiffView>,
     pub entity_context_mode: Option<PersistedEntityContextMode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Annotation {
+    pub text: String,
+    pub content_hash_at_creation: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -80,7 +116,9 @@ pub struct ReviewIdentity {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewStateData {
     pub filter: ReviewFilter,
+    pub annotation_filter: AnnotationFilter,
     pub ui_prefs: ReviewStateUiPrefs,
+    pub annotations: HashMap<String, Annotation>,
     pub records: HashMap<ReviewIdentity, String>,
 }
 
@@ -110,6 +148,8 @@ struct PersistedReviewState {
     repo_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui_prefs: Option<PersistedUiPrefs>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    annotations: Vec<PersistedAnnotationRecord>,
     review_records: Vec<PersistedReviewRecord>,
 }
 
@@ -117,6 +157,8 @@ struct PersistedReviewState {
 #[serde(rename_all = "camelCase")]
 struct PersistedUiPrefs {
     review_filter: ReviewFilter,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    annotation_filter: Option<AnnotationFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view_mode: Option<PersistedViewMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +172,17 @@ struct PersistedUiPrefs {
 struct PersistedReviewRecord {
     logical_entity_key: String,
     target_content_hash: String,
+    updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedAnnotationRecord {
+    logical_entity_key: String,
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_hash_at_creation: Option<String>,
+    created_at: String,
     updated_at: String,
 }
 
@@ -214,10 +267,12 @@ impl ReviewStateStore {
         }
 
         let (records, compacted) = compact_records(persisted.review_records);
+        let annotations = dedupe_annotations(persisted.annotations);
         let (filter, ui_prefs) = if let Some(prefs) = persisted.ui_prefs {
             (
                 prefs.review_filter,
                 ReviewStateUiPrefs {
+                    annotation_filter: prefs.annotation_filter,
                     view_mode: prefs.view_mode,
                     diff_view: prefs.diff_view,
                     entity_context_mode: prefs.entity_context_mode,
@@ -229,7 +284,9 @@ impl ReviewStateStore {
 
         result.state = ReviewStateData {
             filter,
+            annotation_filter: ui_prefs.annotation_filter.unwrap_or_default(),
             ui_prefs,
+            annotations,
             records,
         };
         result.compacted = compacted;
@@ -266,15 +323,32 @@ impl ReviewStateStore {
                 .then_with(|| left.target_content_hash.cmp(&right.target_content_hash))
         });
 
+        let mut annotations: Vec<PersistedAnnotationRecord> = state
+            .annotations
+            .iter()
+            .map(
+                |(logical_entity_key, annotation)| PersistedAnnotationRecord {
+                    logical_entity_key: logical_entity_key.clone(),
+                    text: annotation.text.clone(),
+                    content_hash_at_creation: annotation.content_hash_at_creation.clone(),
+                    created_at: annotation.created_at.clone(),
+                    updated_at: annotation.updated_at.clone(),
+                },
+            )
+            .collect();
+        annotations.sort_by(|left, right| left.logical_entity_key.cmp(&right.logical_entity_key));
+
         let payload = PersistedReviewState {
             version: REVIEW_STATE_VERSION,
             repo_id: self.repo_id.clone(),
             ui_prefs: Some(PersistedUiPrefs {
                 review_filter: state.filter,
+                annotation_filter: Some(state.annotation_filter),
                 view_mode: state.ui_prefs.view_mode,
                 diff_view: state.ui_prefs.diff_view,
                 entity_context_mode: state.ui_prefs.entity_context_mode,
             }),
+            annotations,
             review_records,
         };
         let encoded = serde_json::to_vec_pretty(&payload)
@@ -427,6 +501,24 @@ fn compact_records(input: Vec<PersistedReviewRecord>) -> (HashMap<ReviewIdentity
     (deduped, compacted)
 }
 
+fn dedupe_annotations(input: Vec<PersistedAnnotationRecord>) -> HashMap<String, Annotation> {
+    let mut deduped = HashMap::<String, Annotation>::new();
+
+    for record in input {
+        deduped.insert(
+            record.logical_entity_key,
+            Annotation {
+                text: record.text,
+                content_hash_at_creation: record.content_hash_at_creation,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            },
+        );
+    }
+
+    deduped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +576,16 @@ mod tests {
         assert_eq!(ReviewFilter::All.cycle(), ReviewFilter::Unreviewed);
         assert_eq!(ReviewFilter::Unreviewed.cycle(), ReviewFilter::Reviewed);
         assert_eq!(ReviewFilter::Reviewed.cycle(), ReviewFilter::All);
+    }
+
+    #[test]
+    fn annotation_filter_cycles_all_states() {
+        assert_eq!(AnnotationFilter::All.cycle(), AnnotationFilter::Annotated);
+        assert_eq!(
+            AnnotationFilter::Annotated.cycle(),
+            AnnotationFilter::Unannotated
+        );
+        assert_eq!(AnnotationFilter::Unannotated.cycle(), AnnotationFilter::All);
     }
 
     #[test]
@@ -727,11 +829,14 @@ mod tests {
 
         let mut state = ReviewStateData {
             filter: ReviewFilter::Unreviewed,
+            annotation_filter: AnnotationFilter::Annotated,
             ui_prefs: ReviewStateUiPrefs {
+                annotation_filter: Some(AnnotationFilter::Annotated),
                 view_mode: Some(PersistedViewMode::Split),
                 diff_view: Some(PersistedDiffView::SideBySide),
                 entity_context_mode: Some(PersistedEntityContextMode::Entity),
             },
+            annotations: HashMap::new(),
             records: HashMap::new(),
         };
         state.records.insert(
@@ -750,6 +855,115 @@ mod tests {
         let loaded = store.load();
         assert_eq!(loaded.warning, None);
         assert_eq!(loaded.state, state);
+
+        let _ = fs::remove_dir_all(repo_dir);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_annotations_and_annotation_filter() {
+        let repo_dir = temp_dir("sem-review-state-annotations-roundtrip");
+        init_repo(&repo_dir);
+
+        let store = match ReviewStateStore::initialize(repo_dir.to_string_lossy().as_ref()) {
+            ReviewStateStoreInit::Available(store) => store,
+            ReviewStateStoreInit::Unavailable(reason) => {
+                panic!("store should initialize: {reason}")
+            }
+        };
+
+        let mut state = ReviewStateData {
+            filter: ReviewFilter::Reviewed,
+            annotation_filter: AnnotationFilter::Annotated,
+            ui_prefs: ReviewStateUiPrefs {
+                annotation_filter: Some(AnnotationFilter::Annotated),
+                view_mode: Some(PersistedViewMode::Detail),
+                diff_view: Some(PersistedDiffView::Unified),
+                entity_context_mode: Some(PersistedEntityContextMode::Hunk),
+            },
+            annotations: HashMap::from([(
+                "entityId::src/app.rs::function::run".to_string(),
+                Annotation {
+                    text: "needs follow-up".to_string(),
+                    content_hash_at_creation: None,
+                    created_at: "2026-03-08T20:10:00Z".to_string(),
+                    updated_at: "2026-03-08T20:11:00Z".to_string(),
+                },
+            )]),
+            records: HashMap::new(),
+        };
+        state.records.insert(
+            ReviewIdentity {
+                logical_entity_key: "entityId::src/app.rs::function::run".to_string(),
+                target_content_hash:
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                        .to_string(),
+            },
+            "2026-03-08T20:10:00Z".to_string(),
+        );
+
+        store.save(&state).expect("save should succeed");
+
+        let loaded = store.load();
+        assert_eq!(loaded.warning, None);
+        assert_eq!(loaded.state, state);
+
+        let _ = fs::remove_dir_all(repo_dir);
+    }
+
+    #[test]
+    fn load_annotations_last_writer_wins_for_duplicate_keys() {
+        let repo_dir = temp_dir("sem-review-state-annotation-dedupe");
+        init_repo(&repo_dir);
+
+        let store = match ReviewStateStore::initialize(repo_dir.to_string_lossy().as_ref()) {
+            ReviewStateStoreInit::Available(store) => store,
+            ReviewStateStoreInit::Unavailable(reason) => {
+                panic!("store should initialize: {reason}")
+            }
+        };
+
+        let payload = serde_json::json!({
+            "version": 1,
+            "repoId": store.repo_id.clone(),
+            "uiPrefs": {
+                "reviewFilter": "all",
+                "annotationFilter": "annotated"
+            },
+            "reviewRecords": [],
+            "annotations": [
+                {
+                    "logicalEntityKey": "entityId::dup",
+                    "text": "first",
+                    "createdAt": "2026-03-08T20:00:00Z",
+                    "updatedAt": "2026-03-08T20:00:00Z"
+                },
+                {
+                    "logicalEntityKey": "entityId::dup",
+                    "text": "second",
+                    "createdAt": "2026-03-08T20:00:00Z",
+                    "updatedAt": "2026-03-08T20:01:00Z"
+                }
+            ]
+        });
+        fs::create_dir_all(store.file_path().parent().expect("has parent"))
+            .expect("state dir should be created");
+        fs::write(
+            store.file_path(),
+            serde_json::to_vec_pretty(&payload).expect("json should encode"),
+        )
+        .expect("file should write");
+
+        let result = store.load();
+        assert_eq!(result.state.annotation_filter, AnnotationFilter::Annotated);
+        assert_eq!(result.state.annotations.len(), 1);
+        assert_eq!(
+            result
+                .state
+                .annotations
+                .get("entityId::dup")
+                .map(|annotation| annotation.text.as_str()),
+            Some("second")
+        );
 
         let _ = fs::remove_dir_all(repo_dir);
     }

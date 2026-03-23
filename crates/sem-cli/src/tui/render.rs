@@ -30,6 +30,9 @@ const DIFF_REMOVE_BG: Color = Color::Rgb(74, 34, 29);
 const DIFF_MODIFIED_BG: Color = Color::Rgb(58, 51, 25);
 const DIFF_GUTTER_FG: Color = Color::Rgb(95, 95, 95);
 const DIFF_HUNK_FG: Color = Color::Gray;
+const ANNOTATION_FG: Color = Color::Yellow;
+const ANNOTATION_STALE_FG: Color = Color::LightYellow;
+const ANNOTATION_INPUT_BG: Color = Color::Rgb(58, 44, 17);
 const FOOTER_CELL_SEPARATOR: &str = " | ";
 const SPLIT_LEFT_RATIO_PERCENT: u16 = 30;
 const SPLIT_LEFT_MIN_COLS: u16 = 28;
@@ -94,14 +97,26 @@ pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
 }
 
 fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
+    let show_input = app.annotation_input_active();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints(if show_input {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        })
         .split(frame.area());
+    let body_index = 1usize;
+    let footer_index = if show_input { 3usize } else { 2usize };
     let widths = compute_list_column_widths(chunks[1].width);
 
     let columns = format!(
@@ -130,10 +145,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
 
     if visible_indices.is_empty() {
         items.push(ListItem::new(Line::styled(
-            format!(
-                "No entities match filter ({})",
-                app.review_filter().as_token()
-            ),
+            empty_filter_message(app),
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -165,6 +177,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
             let (icon, tag, style) =
                 change_visuals(row.change.change_type, row.change.structural_change);
 
+            let badge = annotation_badge(app, row_index);
+            let entity_text_width = widths.entity_col.saturating_sub(4).max(1);
             let spans = vec![
                 Span::styled(format!("{marker}{icon}"), style),
                 Span::styled(
@@ -173,8 +187,12 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    fit_cell(&row.entity_name, widths.entity_col),
+                    fit_cell(&row.entity_name, entity_text_width),
                     Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    fit_cell(badge.map(|(label, _)| label).unwrap_or(""), 4),
+                    badge.map(|(_, style)| style).unwrap_or_default(),
                 ),
                 Span::raw(" "),
                 Span::styled(fit_cell(tag, widths.change_col), style),
@@ -202,21 +220,36 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
         .selected()
         .min(selectable_indices.len().saturating_sub(1));
     state.select(selectable_indices.get(selected).copied());
-    frame.render_stateful_widget(list, chunks[1], &mut state);
+    frame.render_stateful_widget(list, chunks[body_index], &mut state);
 
     let footer = list_footer_parts(app);
-    draw_footer(frame, chunks[2], &footer);
+    draw_footer(frame, chunks[footer_index], &footer);
+    if show_input {
+        draw_annotation_input(frame, chunks[2], app);
+    }
 }
 
 fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
+    let show_input = app.annotation_input_active();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints(if show_input {
+            vec![
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        })
         .split(frame.area());
+    let body_index = 1usize;
+    let footer_index = if show_input { 3usize } else { 2usize };
 
     frame.render_widget(
         Paragraph::new(vec![
@@ -229,8 +262,22 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
         chunks[0],
     );
     let selected_file_path = app.selected_row().map(|row| row.file_path.as_str());
-    let content_height = usize::from(chunks[1].height.saturating_sub(2)).max(1);
+    let body_area = chunks[body_index];
     let start = app.detail_scroll();
+    let annotation = app.selected_row_annotation();
+    let (annotation_area, diff_area) = if annotation.is_some() {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(body_area);
+        (Some(split[0]), split[1])
+    } else {
+        (None, body_area)
+    };
+    if let (Some(area), Some((text, hash_matches))) = (annotation_area, annotation) {
+        draw_annotation_panel(frame, area, text, hash_matches);
+    }
+    let content_height = usize::from(diff_area.height.saturating_sub(2)).max(1);
 
     match app.effective_view() {
         DiffView::Unified => {
@@ -251,12 +298,11 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
                 Paragraph::new(lines)
                     .block(Block::default().borders(Borders::ALL).title("Diff"))
                     .wrap(Wrap { trim: false }),
-                chunks[1],
+                diff_area,
             );
         }
         DiffView::SideBySide => {
-            let area = chunks[1];
-            let line_width = area.width.saturating_sub(6) as usize;
+            let line_width = diff_area.width.saturating_sub(6) as usize;
             let half = (line_width / 2).max(20);
             let side_lines = app.side_by_side_lines();
             let end = (start + content_height).min(side_lines.len());
@@ -267,24 +313,39 @@ fn draw_detail(frame: &mut Frame<'_>, app: &AppState) {
 
             frame.render_widget(
                 Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Diff")),
-                chunks[1],
+                diff_area,
             );
         }
     }
 
     let footer = detail_footer_parts(app);
-    draw_footer(frame, chunks[2], &footer);
+    draw_footer(frame, chunks[footer_index], &footer);
+    if show_input {
+        draw_annotation_input(frame, chunks[2], app);
+    }
 }
 
 fn draw_split(frame: &mut Frame<'_>, app: &AppState) {
+    let show_input = app.annotation_input_active();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints(if show_input {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        })
         .split(frame.area());
+    let body_index = 1usize;
+    let footer_index = if show_input { 3usize } else { 2usize };
 
     frame.render_widget(
         Paragraph::new(vec![
@@ -301,12 +362,15 @@ fn draw_split(frame: &mut Frame<'_>, app: &AppState) {
         chunks[0],
     );
 
-    let split_body = chunks[1];
+    let split_body = chunks[body_index];
     let split_min_width = SPLIT_LEFT_MIN_COLS.saturating_add(SPLIT_RIGHT_MIN_COLS);
     if split_body.width < split_min_width {
         draw_split_sidebar(frame, split_body, app, Some(SPLIT_NARROW_NOTICE));
         let footer = split_footer_parts(app, Some(SPLIT_NARROW_NOTICE));
-        draw_footer(frame, chunks[2], &footer);
+        draw_footer(frame, chunks[footer_index], &footer);
+        if show_input {
+            draw_annotation_input(frame, chunks[2], app);
+        }
         return;
     }
 
@@ -322,7 +386,10 @@ fn draw_split(frame: &mut Frame<'_>, app: &AppState) {
     draw_split_preview(frame, split_chunks[1], app);
 
     let footer = split_footer_parts(app, None);
-    draw_footer(frame, chunks[2], &footer);
+    draw_footer(frame, chunks[footer_index], &footer);
+    if show_input {
+        draw_annotation_input(frame, chunks[2], app);
+    }
 }
 
 pub(super) fn list_selection_at(
@@ -332,7 +399,7 @@ pub(super) fn list_selection_at(
     row: u16,
     app: &AppState,
 ) -> Option<usize> {
-    let list_body = list_body_rect(viewport_width, viewport_height)?;
+    let list_body = list_body_rect(viewport_width, viewport_height, app)?;
     if !point_in_rect(list_body, column, row) {
         return None;
     }
@@ -374,8 +441,9 @@ pub(super) fn split_scroll_target_at(
     viewport_height: u16,
     column: u16,
     row: u16,
+    app: &AppState,
 ) -> Option<SplitScrollTarget> {
-    let split_body = split_body_rect(viewport_width, viewport_height)?;
+    let split_body = split_body_rect(viewport_width, viewport_height, app)?;
     if !point_in_rect(split_body, column, row) {
         return None;
     }
@@ -400,7 +468,7 @@ pub(super) fn split_sidebar_selection_at(
     row: u16,
     app: &AppState,
 ) -> Option<usize> {
-    let split_body = split_body_rect(viewport_width, viewport_height)?;
+    let split_body = split_body_rect(viewport_width, viewport_height, app)?;
     let sidebar_area = split_sidebar_area(split_body);
     if !point_in_rect(sidebar_area, column, row) {
         return None;
@@ -439,15 +507,24 @@ pub(super) fn split_sidebar_selection_at(
         .position(|&selectable_item_index| selectable_item_index == item_index)
 }
 
-fn split_body_rect(viewport_width: u16, viewport_height: u16) -> Option<Rect> {
+fn split_body_rect(viewport_width: u16, viewport_height: u16, app: &AppState) -> Option<Rect> {
     let area = Rect::new(0, 0, viewport_width, viewport_height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints(if app.annotation_input_active() {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        })
         .split(area);
     let split_body = chunks[1];
     if split_body.width == 0 || split_body.height == 0 {
@@ -456,15 +533,24 @@ fn split_body_rect(viewport_width: u16, viewport_height: u16) -> Option<Rect> {
     Some(split_body)
 }
 
-fn list_body_rect(viewport_width: u16, viewport_height: u16) -> Option<Rect> {
+fn list_body_rect(viewport_width: u16, viewport_height: u16, app: &AppState) -> Option<Rect> {
     let area = Rect::new(0, 0, viewport_width, viewport_height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints(if app.annotation_input_active() {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        })
         .split(area);
     let list_body = chunks[1];
     if list_body.width == 0 || list_body.height == 0 {
@@ -594,13 +680,7 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
 
     if visible_indices.is_empty() {
         items.push(ListItem::new(Line::styled(
-            fit_cell(
-                &format!(
-                    "No entities match filter ({})",
-                    app.review_filter().as_token()
-                ),
-                content_width,
-            ),
+            fit_cell(&empty_filter_message(app), content_width),
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -632,6 +712,8 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
             let (change_icon, _, change_style) =
                 change_visuals(row.change.change_type, row.change.structural_change);
 
+            let badge = annotation_badge(app, row_index);
+            let entity_text_width = entity_col.saturating_sub(4).max(1);
             let mut spans = vec![
                 Span::styled(format!("{marker}{change_icon}"), change_style),
                 Span::raw(" "),
@@ -640,8 +722,12 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(
-                    fit_cell(&row.entity_name, entity_col),
+                    fit_cell(&row.entity_name, entity_text_width),
                     Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    fit_cell(badge.map(|(label, _)| label).unwrap_or(""), 4),
+                    badge.map(|(_, style)| style).unwrap_or_default(),
                 ),
                 Span::raw(" "),
             ];
@@ -679,10 +765,23 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     };
 
     let rendered = super::detail::render_change(&row.change, app.entity_context_mode());
-    let content_height = usize::from(area.height.saturating_sub(2)).max(1);
     let start = app.detail_scroll();
     let selected_file_path = Some(row.file_path.as_str());
     let title = fit_cell(&format!("Diff {} ({})", row.entity_name, row.file_path), 48);
+    let annotation = app.selected_row_annotation();
+    let (annotation_area, diff_area) = if annotation.is_some() {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(area);
+        (Some(split[0]), split[1])
+    } else {
+        (None, area)
+    };
+    if let (Some(annotation_area), Some((text, hash_matches))) = (annotation_area, annotation) {
+        draw_annotation_panel(frame, annotation_area, text, hash_matches);
+    }
+    let content_height = usize::from(diff_area.height.saturating_sub(2)).max(1);
 
     match app.effective_view() {
         DiffView::Unified => {
@@ -704,11 +803,11 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Paragraph::new(lines)
                     .block(Block::default().borders(Borders::ALL).title(title))
                     .wrap(Wrap { trim: false }),
-                area,
+                diff_area,
             );
         }
         DiffView::SideBySide => {
-            let line_width = area.width.saturating_sub(6) as usize;
+            let line_width = diff_area.width.saturating_sub(6) as usize;
             let half = (line_width / 2).max(20);
             let start = start.min(rendered.side_by_side_lines.len());
             let end = (start + content_height).min(rendered.side_by_side_lines.len());
@@ -719,15 +818,99 @@ fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
             frame.render_widget(
                 Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
-                area,
+                diff_area,
             );
         }
     }
 }
 
+fn annotation_badge(app: &AppState, row_index: usize) -> Option<(&'static str, Style)> {
+    if !app.is_row_annotated(row_index) {
+        return None;
+    }
+
+    if app.row_annotation_hash_matches(row_index) {
+        Some(("[*]", Style::default().fg(ANNOTATION_FG)))
+    } else {
+        Some(("[~]", Style::default().fg(ANNOTATION_STALE_FG)))
+    }
+}
+
+fn draw_annotation_panel(frame: &mut Frame<'_>, area: Rect, text: &str, hash_matches: bool) {
+    let title = if hash_matches {
+        "Annotation"
+    } else {
+        "Annotation (Different Version)"
+    };
+    let style = if hash_matches {
+        Style::default().fg(ANNOTATION_FG)
+    } else {
+        Style::default()
+            .fg(ANNOTATION_STALE_FG)
+            .add_modifier(Modifier::DIM)
+    };
+
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(style)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn empty_filter_message(app: &AppState) -> String {
+    format!(
+        "No entities match filters (r: {}, A: {})",
+        app.review_filter().as_token(),
+        app.annotation_filter().as_token()
+    )
+}
+
+fn draw_annotation_input(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let Some(text) = app.annotation_input_text() else {
+        return;
+    };
+    let cursor_position = app.annotation_input_cursor_position().unwrap_or(0);
+    let prompt = "annotation: ";
+    let prompt_width = prompt.chars().count();
+    let total_width = usize::from(area.width);
+    let visible_text_width = total_width.saturating_sub(prompt_width);
+    let cursor_char = text[..cursor_position].chars().count();
+    let start_char = if visible_text_width == 0 {
+        cursor_char
+    } else {
+        cursor_char.saturating_sub(visible_text_width.saturating_sub(1))
+    };
+    let visible_text: String = text
+        .chars()
+        .skip(start_char)
+        .take(visible_text_width)
+        .collect();
+    let cursor_column = if total_width == 0 {
+        0
+    } else {
+        (prompt_width + cursor_char.saturating_sub(start_char)).min(total_width.saturating_sub(1))
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prompt, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(visible_text),
+        ]))
+        .style(Style::default().bg(ANNOTATION_INPUT_BG).fg(Color::White)),
+        area,
+    );
+    frame.set_cursor_position((area.x + cursor_column as u16, area.y));
+}
+
 fn list_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move, Space toggle-reviewed, Enter open, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move, Space toggle-reviewed, a annotate, D delete-note, A note-filter, Enter open, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -741,7 +924,7 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 
 fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterParts {
     let mut controls =
-        "Controls: ↑/↓ j/k move-focused-pane, Tab focus-pane, s side-by-side, Space toggle-reviewed, Enter open, n/p hunks, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
+        "Controls: ↑/↓ j/k move-focused-pane, Tab focus-pane, s side-by-side, Space toggle-reviewed, a annotate, D delete-note, A note-filter, Enter open, n/p hunks, [/] step, v cycle-view, g/G jump, ? help, q/Ctrl+c quit".to_string();
     if !app.commit_navigation_enabled() {
         controls.push_str(" | stepping disabled");
     }
@@ -758,7 +941,7 @@ fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterPart
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
     let mut controls =
-        "Controls: Esc back, Space toggle-reviewed, [/] step, ←/→ entity, s side-by-side, n/p hunks, PgUp/PgDn scroll, v cycle-view, g/G top-bottom, ? help, q/Ctrl+c quit"
+        "Controls: Esc back, Space toggle-reviewed, a annotate, D delete-note, A note-filter, [/] step, ←/→ entity, s side-by-side, n/p hunks, PgUp/PgDn scroll, v cycle-view, g/G top-bottom, ? help, q/Ctrl+c quit"
             .to_string();
     if app.fallback_active() {
         controls.push_str(" | width too narrow for side-by-side, showing unified");
@@ -778,6 +961,7 @@ fn footer_cells(app: &AppState) -> Vec<FooterCell> {
     vec![
         FooterCell::new('m', app.step_mode().as_token()),
         FooterCell::new('r', app.review_filter().as_token()),
+        FooterCell::new('A', app.annotation_filter().as_token()),
         FooterCell::new('e', app.entity_context_mode().as_token()),
         FooterCell::new('v', app.mode_token()),
     ]
@@ -795,6 +979,7 @@ fn footer_status_message(loading: bool, status: Option<&str>) -> Option<String> 
 fn render_footer_cells(cells: &[FooterCell]) -> String {
     let mut mode_value: Option<&str> = None;
     let mut review_value: Option<&str> = None;
+    let mut annotation_value: Option<&str> = None;
     let mut entity_value: Option<&str> = None;
     let mut view_value: Option<&str> = None;
 
@@ -802,6 +987,7 @@ fn render_footer_cells(cells: &[FooterCell]) -> String {
         match cell.key {
             'm' if mode_value.is_none() => mode_value = Some(cell.value.as_str()),
             'r' if review_value.is_none() => review_value = Some(cell.value.as_str()),
+            'A' if annotation_value.is_none() => annotation_value = Some(cell.value.as_str()),
             'e' if entity_value.is_none() => entity_value = Some(cell.value.as_str()),
             'v' if view_value.is_none() => view_value = Some(cell.value.as_str()),
             _ => {}
@@ -811,6 +997,9 @@ fn render_footer_cells(cells: &[FooterCell]) -> String {
     let mut rendered = vec![format!("m: {}", mode_value.unwrap_or("pairwise"))];
     if let Some(value) = review_value {
         rendered.push(format!("r: {value}"));
+    }
+    if let Some(value) = annotation_value {
+        rendered.push(format!("A: {value}"));
     }
     if let Some(value) = entity_value {
         rendered.push(format!("e: {value}"));
@@ -933,14 +1122,17 @@ fn format_comparator_context_line(
 }
 
 fn draw_help_overlay(frame: &mut Frame<'_>) {
-    let popup = centered_rect(80, 60, frame.area());
+    let popup = centered_rect(80, 80, frame.area());
     frame.render_widget(Clear, popup);
 
     let help_lines = vec![
         Line::from("List Mode:"),
         Line::from("  ↑/↓ or j/k move selection"),
         Line::from("  Space toggle reviewed on focused entity"),
+        Line::from("  a add/replace annotation on focused entity"),
+        Line::from("  D delete annotation on focused entity"),
         Line::from("  r cycle review filter (all/unreviewed/reviewed)"),
+        Line::from("  A cycle annotation filter (all/annotated/unannotated)"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  e toggle hunk/entity context"),
@@ -950,7 +1142,10 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("Split Mode:"),
         Line::from("  ↑/↓ or j/k move focused pane"),
         Line::from("  Space toggle reviewed on focused entity"),
+        Line::from("  a add/replace annotation on focused entity"),
+        Line::from("  D delete annotation on focused entity"),
         Line::from("  r cycle review filter"),
+        Line::from("  A cycle annotation filter"),
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  e toggle hunk/entity context"),
@@ -964,7 +1159,10 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         Line::from("  [ / ] step older/newer endpoint"),
         Line::from("  m toggle pairwise/cumulative mode"),
         Line::from("  Space toggle reviewed on opened entity"),
+        Line::from("  a add/replace annotation on opened entity"),
+        Line::from("  D delete annotation on opened entity"),
         Line::from("  r cycle review filter"),
+        Line::from("  A cycle annotation filter"),
         Line::from("  e toggle hunk/entity context"),
         Line::from("  Esc back to prior non-detail view"),
         Line::from("  Left/Right previous/next entity"),
@@ -1802,6 +2000,12 @@ mod tests {
         }
     }
 
+    fn type_annotation(app: &mut AppState, text: &str) {
+        for character in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+    }
+
     fn configure_commit_navigation(app: &mut AppState) {
         let endpoints = vec![
             StepEndpoint {
@@ -2142,7 +2346,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("No entities match filter (revie"),
+            rendered.contains("No entities match filters (r: r"),
             "expected split no-match row, got:\n{rendered}"
         );
     }
@@ -2180,7 +2384,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("No entities match filter (reviewed)"),
+            rendered.contains("No entities match filters (r: reviewed, A: all)"),
             "expected no-match row, got:\n{rendered}"
         );
     }
@@ -2344,12 +2548,37 @@ mod tests {
     }
 
     #[test]
+    fn draw_detail_mode_renders_annotation_line_after_confirm() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "needs follow-up");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed in detail mode with annotation");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("Annotation"),
+            "expected annotation panel title in detail render, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("needs follow-up"),
+            "expected annotation text in detail render, got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn list_footer_parts_include_mode_cell() {
         let app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
         let footer = list_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: hunk | v: list"
+            "m: pairwise | r: all | A: all | e: hunk | v: list"
         );
         assert_eq!(footer.status, None);
     }
@@ -2398,7 +2627,7 @@ mod tests {
         let footer = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: cumulative | r: all | e: hunk | v: detail"
+            "m: cumulative | r: all | A: all | e: hunk | v: detail"
         );
     }
 
@@ -2410,14 +2639,14 @@ mod tests {
         let baseline = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&baseline.cells),
-            "m: pairwise | r: all | e: hunk | v: detail"
+            "m: pairwise | r: all | A: all | e: hunk | v: detail"
         );
 
         app.set_commit_loading(true);
         let loading = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&loading.cells),
-            "m: pairwise | r: all | e: hunk | v: detail"
+            "m: pairwise | r: all | A: all | e: hunk | v: detail"
         );
         assert_eq!(loading.status.as_deref(), Some("Loading..."));
     }
@@ -2430,7 +2659,7 @@ mod tests {
         let footer = list_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: entity | v: list"
+            "m: pairwise | r: all | A: all | e: entity | v: list"
         );
     }
 
@@ -2443,7 +2672,7 @@ mod tests {
         let footer = detail_footer_parts(&app);
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: entity | v: detail"
+            "m: pairwise | r: all | A: all | e: entity | v: detail"
         );
     }
 
@@ -2456,7 +2685,7 @@ mod tests {
         let footer = split_footer_parts(&app, Some(SPLIT_NARROW_NOTICE));
         assert_eq!(
             render_footer_cells(&footer.cells),
-            "m: pairwise | r: all | e: hunk | v: split"
+            "m: pairwise | r: all | A: all | e: hunk | v: split"
         );
         assert_eq!(footer.status.as_deref(), Some(SPLIT_NARROW_NOTICE));
     }
@@ -2527,22 +2756,24 @@ mod tests {
 
     #[test]
     fn split_scroll_target_at_routes_mouse_wheel_to_sidebar_or_preview() {
+        let app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
         assert_eq!(
-            split_scroll_target_at(120, 24, 10, 8),
+            split_scroll_target_at(120, 24, 10, 8, &app),
             Some(SplitScrollTarget::Sidebar)
         );
         assert_eq!(
-            split_scroll_target_at(120, 24, 50, 8),
+            split_scroll_target_at(120, 24, 50, 8, &app),
             Some(SplitScrollTarget::Preview)
         );
     }
 
     #[test]
     fn split_scroll_target_at_returns_none_outside_body_and_handles_narrow_fallback() {
-        assert_eq!(split_scroll_target_at(120, 24, 10, 1), None);
-        assert_eq!(split_scroll_target_at(120, 24, 10, 23), None);
+        let app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
+        assert_eq!(split_scroll_target_at(120, 24, 10, 1, &app), None);
+        assert_eq!(split_scroll_target_at(120, 24, 10, 23, &app), None);
         assert_eq!(
-            split_scroll_target_at(70, 24, 60, 8),
+            split_scroll_target_at(70, 24, 60, 8, &app),
             Some(SplitScrollTarget::Sidebar)
         );
     }

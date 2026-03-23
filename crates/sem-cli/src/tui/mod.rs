@@ -112,7 +112,7 @@ pub fn run_tui(
             match event::read()? {
                 Event::Key(key) => app_state.handle_key(key),
                 Event::Mouse(mouse) => {
-                    if app_state.show_help() {
+                    if app_state.show_help() || app_state.annotation_input_active() {
                         continue;
                     }
 
@@ -158,6 +158,7 @@ pub fn run_tui(
                                     viewport_height,
                                     mouse.column,
                                     mouse.row,
+                                    &app_state,
                                 ) {
                                     app_state.handle_split_mouse_scroll(
                                         matches!(target, render::SplitScrollTarget::Preview),

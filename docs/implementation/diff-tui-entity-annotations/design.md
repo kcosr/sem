@@ -52,7 +52,7 @@ The TUI supports marking entities as reviewed, but there is no way to attach qua
 
 ### 6.3 Keybindings
 1. `a` — add/replace annotation on selected entity. Enters inline text input mode.
-2. `D` (shift+d) — delete annotation on selected entity. Uppercase to prevent accidental deletion during navigation, since annotations are user-authored content with no undo.
+2. `D` (shift+d) — delete annotation on selected entity. First press arms deletion for the selected entity; pressing `D` again confirms. `Esc` cancels a pending delete.
 3. `A` (shift+a) — cycle annotation filter: `all → annotated → unannotated → all`.
 4. These keybindings are available in list, split, and detail modes.
 
@@ -77,10 +77,10 @@ The TUI supports marking entities as reviewed, but there is no way to attach qua
 ### 6.5 Display
 1. **List mode**: annotated entities show a `[*]` badge after the entity name column.
 2. **Split mode sidebar**: same `[*]` badge as list mode.
-3. **Split mode preview / Detail mode**: annotation text is rendered as a styled line above the diff content, e.g. `note: needs error handling` in a distinct color (yellow or cyan).
+3. **Split mode preview / Detail mode**: annotation text is rendered in a dedicated annotation panel above the diff content. The panel title is `Annotation` and the body contains the raw annotation text.
 4. If the annotation's `contentHashAtCreation` is present and differs from the current entity content hash, a visual hint is shown to indicate the annotation was written against a different version of the code:
    - **List/Split sidebar**: badge changes from `[*]` to `[~]`
-   - **Detail/Split preview**: annotation line shows a suffix, e.g. `note (different version): needs error handling` in a dimmer or distinct color
+   - **Detail/Split preview**: annotation panel title changes to `Annotation (Different Version)` and uses dimmer styling
    - If `contentHashAtCreation` is absent (hash material was unavailable at creation) or the current content hash cannot be computed, no hint is shown — the annotation displays normally.
    - The annotation is always shown regardless of hash match. The hint is informational only.
 
@@ -100,7 +100,7 @@ Each annotation record contains:
 - `updatedAt`: string — ISO 8601 UTC timestamp, updated on replace
 
 ### 6.10 Annotatability
-An entity is annotatable if its `logicalEntityKey` can be resolved (i.e., `row_annotation_keys[i]` is `Some`). The `contentHashAtCreation` field is best-effort: if `build_target_content_hash()` returns `None` for the entity (no hash material), the annotation is still created with `contentHashAtCreation` set to an empty string or omitted. This ensures entities without content (e.g., pure-metadata changes) are still annotatable.
+An entity is annotatable if its `logicalEntityKey` can be resolved (i.e., `row_annotation_keys[i]` is `Some`). The `contentHashAtCreation` field is best-effort: if `build_target_content_hash()` returns `None` for the entity (no hash material), the annotation is still created with `contentHashAtCreation` omitted. This ensures entities without content (e.g., pure-metadata changes) are still annotatable.
 
 ### 6.8 Runtime State in AppState
 1. `annotations: HashMap<String, Annotation>` — keyed by `logicalEntityKey`, stores current annotation data.
@@ -135,8 +135,9 @@ Captures the input buffer, cursor position, and the identity of the entity being
 ### 7.2 Deleting an Annotation
 1. User presses `D` (shift+d) on an annotated entity.
 2. If no annotation exists for the selected entity, no-op.
-3. Remove the annotation from `self.annotations`, mark dirty.
-4. Show transient status message "annotation removed".
+3. On first press, the app arms delete confirmation for the selected entity and shows a transient status message: `Press D again to delete annotation; Esc cancels`.
+4. On second `D` press for the same selected entity, remove the annotation from `self.annotations`, mark dirty, and show `annotation removed`.
+5. If the user presses `Esc` before confirming, the pending delete is cancelled.
 
 ### 7.3 Stepping / Snapshot Application
 1. `apply_commit_snapshot()` replaces `self.rows`.
@@ -160,7 +161,7 @@ Step/refresh responses arrive asynchronously via `ReloadCoordinator` (mod.rs:219
 ## 8. Resolved Questions
 
 ### 8.1 Delete Confirmation — RESOLVED
-Delete uses `D` (shift+d) to prevent accidental activation during navigation. No confirmation dialog; a transient status message "annotation removed" provides feedback. Uppercase keybinding is sufficient safety for v1.
+Delete uses `D` (shift+d) with explicit two-step confirmation. First press arms deletion and shows `Press D again to delete annotation; Esc cancels`; second press confirms deletion. This preserves keyboard-only flow without a modal dialog.
 
 ### 8.2 Keybinding Conflicts — RESOLVED
 `a` and `D` have no conflicts with existing bindings (`v`, `s`, `n`, `p`, `e`, `r`, `m`, `[`, `]`, `g`, `G`, `j`, `k`, `q`, `?`, Space, Enter, Esc, Tab, arrows, PageUp/PageDown). Lowercase `d` remains available for future use.

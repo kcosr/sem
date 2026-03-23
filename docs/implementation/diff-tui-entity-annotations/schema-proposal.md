@@ -30,15 +30,18 @@ Define runtime and persistence contracts for per-entity text annotations in the 
 ### 2.2 Runtime Delete Annotation Action (internal, keybinding: D)
 ```json
 {
-  "action": "deleteAnnotation",
+  "action": "confirmDeleteAnnotation",
   "entity": {
     "logicalEntityKey": "entityId::src/auth.ts::function::validateToken"
+  },
+  "confirmation": {
+    "armed": true
   }
 }
 ```
 
 ### 2.3 Footer Cells (internal)
-No new footer cells for annotations in v1. Annotations are indicated per-entity via `[*]` badge.
+Add one footer cell for the annotation filter state: `A: all|annotated|unannotated`. Annotation presence is still indicated per-entity via `[*]` / `[~]` badges.
 
 ### 2.4 Persistence File Example (extended)
 ```json
