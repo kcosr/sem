@@ -502,6 +502,7 @@ impl AppState {
             return;
         }
         self.selected = list_selection;
+        self.open_detail();
     }
 
     pub fn handle_split_mouse_scroll(&mut self, preview_pane: bool, scroll_down: bool) {
@@ -1316,10 +1317,24 @@ mod tests {
         assert_eq!(app.selected(), 0);
 
         app.handle_list_click(1);
+        assert_eq!(app.mode(), Mode::Detail);
         assert_eq!(app.selected(), 1);
 
         app.handle_list_click(99);
         assert_eq!(app.selected(), 1);
+        assert_eq!(app.mode(), Mode::Detail);
+    }
+
+    #[test]
+    fn list_click_opens_detail_for_valid_selection() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::List);
+
+        app.handle_list_click(0);
+        assert_eq!(app.mode(), Mode::Detail);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::List);
     }
 
     #[test]
