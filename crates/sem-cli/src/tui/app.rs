@@ -62,6 +62,33 @@ struct AnnotationInputState {
     target_content_hash: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnotationDeleteAction {
+    Cancel,
+    Delete,
+}
+
+impl AnnotationDeleteAction {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Cancel => Self::Delete,
+            Self::Delete => Self::Cancel,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnnotationDeleteConfirmationState {
+    target_logical_entity_key: String,
+    selected_action: AnnotationDeleteAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnnotationDeleteModal<'a> {
+    pub selected_action: AnnotationDeleteAction,
+    pub target_logical_entity_key: &'a str,
+}
+
 #[derive(Debug)]
 pub struct AppState {
     rows: Vec<EntityRow>,
@@ -95,7 +122,7 @@ pub struct AppState {
     row_review_identities: Vec<Option<ReviewIdentity>>,
     row_annotation_keys: Vec<Option<String>>,
     annotation_input: Option<AnnotationInputState>,
-    pending_annotation_delete_key: Option<String>,
+    annotation_delete_confirmation: Option<AnnotationDeleteConfirmationState>,
     review_status_message: Option<String>,
     review_state_dirty: bool,
 }
@@ -143,7 +170,7 @@ impl AppState {
             row_review_identities: vec![None; row_count],
             row_annotation_keys: vec![None; row_count],
             annotation_input: None,
-            pending_annotation_delete_key: None,
+            annotation_delete_confirmation: None,
             review_status_message: None,
             review_state_dirty: false,
         };
@@ -261,6 +288,10 @@ impl AppState {
 
     pub fn annotation_input_active(&self) -> bool {
         self.annotation_input.is_some()
+    }
+
+    pub fn annotation_delete_modal_active(&self) -> bool {
+        self.annotation_delete_confirmation.is_some()
     }
 
     pub fn is_row_reviewed(&self, row_index: usize) -> bool {
@@ -446,6 +477,14 @@ impl AppState {
         Some((text, self.row_annotation_hash_matches(row_index)))
     }
 
+    pub fn annotation_delete_modal(&self) -> Option<AnnotationDeleteModal<'_>> {
+        let confirmation = self.annotation_delete_confirmation.as_ref()?;
+        Some(AnnotationDeleteModal {
+            selected_action: confirmation.selected_action,
+            target_logical_entity_key: &confirmation.target_logical_entity_key,
+        })
+    }
+
     fn selected_row_annotation_key(&self) -> Option<String> {
         let row_index = self.selected_row_index()?;
         self.row_annotation_keys
@@ -484,7 +523,7 @@ impl AppState {
             target_logical_entity_key: logical_entity_key,
             target_content_hash,
         });
-        self.pending_annotation_delete_key = None;
+        self.annotation_delete_confirmation = None;
         self.review_status_message = None;
     }
 
@@ -522,24 +561,40 @@ impl AppState {
         self.annotation_input = None;
     }
 
-    fn delete_annotation(&mut self) -> bool {
+    fn begin_annotation_delete_confirmation(&mut self) -> bool {
+        let Some(_) = self.selected_row_index() else {
+            return false;
+        };
         let Some(logical_entity_key) = self.selected_row_annotation_key() else {
             return false;
         };
         if !self.annotations.contains_key(&logical_entity_key) {
-            self.pending_annotation_delete_key = None;
             return false;
         }
 
-        if self.pending_annotation_delete_key.as_deref() != Some(logical_entity_key.as_str()) {
-            self.pending_annotation_delete_key = Some(logical_entity_key);
-            self.review_status_message =
-                Some("Press D again to delete annotation; Esc cancels".to_string());
+        self.annotation_delete_confirmation = Some(AnnotationDeleteConfirmationState {
+            target_logical_entity_key: logical_entity_key,
+            selected_action: AnnotationDeleteAction::Cancel,
+        });
+        self.review_status_message = None;
+        true
+    }
+
+    fn confirm_annotation_delete(&mut self) -> bool {
+        let Some(confirmation) = self.annotation_delete_confirmation.take() else {
+            return false;
+        };
+
+        if confirmation.selected_action == AnnotationDeleteAction::Cancel {
+            self.review_status_message = Some("annotation delete cancelled".to_string());
             return false;
         }
 
-        if self.annotations.remove(&logical_entity_key).is_some() {
-            self.pending_annotation_delete_key = None;
+        if self
+            .annotations
+            .remove(&confirmation.target_logical_entity_key)
+            .is_some()
+        {
             self.review_state_dirty = true;
             self.review_status_message = Some("annotation removed".to_string());
             return true;
@@ -549,8 +604,29 @@ impl AppState {
     }
 
     fn cancel_annotation_delete_confirmation(&mut self) {
-        self.pending_annotation_delete_key = None;
+        self.annotation_delete_confirmation = None;
         self.review_status_message = Some("annotation delete cancelled".to_string());
+    }
+
+    fn move_annotation_delete_confirmation_left(&mut self) {
+        let Some(confirmation) = self.annotation_delete_confirmation.as_mut() else {
+            return;
+        };
+        confirmation.selected_action = AnnotationDeleteAction::Cancel;
+    }
+
+    fn move_annotation_delete_confirmation_right(&mut self) {
+        let Some(confirmation) = self.annotation_delete_confirmation.as_mut() else {
+            return;
+        };
+        confirmation.selected_action = AnnotationDeleteAction::Delete;
+    }
+
+    fn toggle_annotation_delete_confirmation_action(&mut self) {
+        let Some(confirmation) = self.annotation_delete_confirmation.as_mut() else {
+            return;
+        };
+        confirmation.selected_action = confirmation.selected_action.toggle();
     }
 
     pub fn comparison_line(&self) -> Option<(String, String, String, String)> {
@@ -643,8 +719,10 @@ impl AppState {
         if self.annotation_input.take().is_some() {
             self.review_status_message =
                 Some("annotation input cancelled: commit step applied".to_string());
+        } else if self.annotation_delete_confirmation.take().is_some() {
+            self.review_status_message =
+                Some("annotation delete cancelled: commit step applied".to_string());
         }
-        self.pending_annotation_delete_key = None;
         self.commit_cursor = Some(snapshot.cursor);
         self.step_mode = snapshot.mode;
         self.cumulative_base_endpoint_id = snapshot.base_endpoint_id;
@@ -841,8 +919,8 @@ impl AppState {
             return;
         }
 
-        if key.code == KeyCode::Esc && self.pending_annotation_delete_key.is_some() {
-            self.cancel_annotation_delete_confirmation();
+        if self.annotation_delete_confirmation.is_some() {
+            self.handle_annotation_delete_confirmation_key(key);
             return;
         }
 
@@ -865,7 +943,7 @@ impl AppState {
             KeyCode::Char('a') => self.begin_annotation_input(),
             KeyCode::Char('A') => self.cycle_annotation_filter(),
             KeyCode::Char('D') => {
-                let _ = self.delete_annotation();
+                let _ = self.begin_annotation_delete_confirmation();
             }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
@@ -896,7 +974,7 @@ impl AppState {
             KeyCode::Char('a') => self.begin_annotation_input(),
             KeyCode::Char('A') => self.cycle_annotation_filter(),
             KeyCode::Char('D') => {
-                let _ = self.delete_annotation();
+                let _ = self.begin_annotation_delete_confirmation();
             }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
@@ -931,7 +1009,7 @@ impl AppState {
             KeyCode::Char('a') => self.begin_annotation_input(),
             KeyCode::Char('A') => self.cycle_annotation_filter(),
             KeyCode::Char('D') => {
-                let _ = self.delete_annotation();
+                let _ = self.begin_annotation_delete_confirmation();
             }
             KeyCode::Char('[') => self.queue_commit_action(CommitStepAction::Older),
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
@@ -976,6 +1054,25 @@ impl AppState {
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
                 self.insert_annotation_char(character);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_annotation_delete_confirmation_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.cancel_annotation_delete_confirmation(),
+            KeyCode::Enter => {
+                self.confirm_annotation_delete();
+            }
+            KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k') => {
+                self.move_annotation_delete_confirmation_left();
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Char('l') | KeyCode::Char('j') => {
+                self.move_annotation_delete_confirmation_right();
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.toggle_annotation_delete_confirmation_action();
             }
             _ => {}
         }
@@ -2877,7 +2974,7 @@ mod tests {
     }
 
     #[test]
-    fn annotation_delete_requires_confirmation_and_escape_cancels() {
+    fn annotation_delete_modal_supports_escape_navigation_and_enter_confirm() {
         let mut app = app();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
@@ -2887,19 +2984,41 @@ mod tests {
         let _ = app.take_review_state_dirty_snapshot();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert!(app.annotation_delete_modal_active());
         assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
-        assert_eq!(
-            app.status_message(),
-            Some("Press D again to delete annotation; Esc cancels")
-        );
         assert!(app.take_review_state_dirty_snapshot().is_none());
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.annotation_delete_modal_active());
         assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
         assert_eq!(app.status_message(), Some("annotation delete cancelled"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
-        app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert_eq!(
+            app.annotation_delete_modal()
+                .map(|modal| modal.selected_action),
+            Some(AnnotationDeleteAction::Cancel)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            app.annotation_delete_modal()
+                .map(|modal| modal.selected_action),
+            Some(AnnotationDeleteAction::Delete)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(
+            app.annotation_delete_modal()
+                .map(|modal| modal.selected_action),
+            Some(AnnotationDeleteAction::Cancel)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(
+            app.annotation_delete_modal()
+                .map(|modal| modal.selected_action),
+            Some(AnnotationDeleteAction::Delete)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.annotation_delete_modal_active());
         assert_eq!(app.row_annotation_text(0), None);
         assert_eq!(app.status_message(), Some("annotation removed"));
         assert!(

@@ -85,7 +85,7 @@ Deliverables:
 10. Add `begin_annotation_input()`: resolve selected row's key, pre-fill existing text, enter input mode.
 11. Add `confirm_annotation()`: validate non-whitespace, store annotation with timestamps and provenance hash, mark dirty, exit input mode. On replace: preserve `createdAt`, update `updatedAt` and `contentHashAtCreation`.
 12. Add `cancel_annotation()`: discard input, exit input mode.
-13. Add `delete_annotation()`: arm delete on first `D`, confirm delete on second `D`, cancel on `Esc`, and remove from HashMap only on confirmation.
+13. Add delete-confirmation modal state and handlers: `D` opens a minimal `Delete Annotation` modal with `No` / `Yes`, `Tab` / arrow keys move focus, `Enter` confirms the selected action, `Esc` cancels, and deletion removes the annotation from the HashMap only on explicit confirmation.
 14. Add `cycle_annotation_filter()`: cycle filter, mark dirty, realign selection.
 15. Add accessors: `is_row_annotated()`, `row_annotation_text()`, `row_annotation_hash_matches()`.
 16. Extend `visible_row_indices()` to apply annotation filter predicate alongside review filter.
@@ -115,7 +115,7 @@ Gate:
 ### A3: Input Mode + Keybindings + Rendering
 Deliverables:
 1. Wire `a` keybinding in list, split, and detail mode key handlers to call `begin_annotation_input()`.
-2. Wire `D` keybinding in list, split, and detail mode key handlers to call `delete_annotation()`.
+2. Wire `D` keybinding in list, split, and detail mode key handlers to open the delete-confirmation modal for the selected annotation.
 3. Wire `A` keybinding in list, split, and detail mode key handlers to call `cycle_annotation_filter()`.
 4. Add input mode key routing: when `annotation_input` is `Some`, route all key events to annotation input handler instead of mode-specific handlers.
 5. Implement annotation input key handler:
@@ -126,7 +126,7 @@ Deliverables:
    - Home/End: cursor to start/end.
    - Enter: call `confirm_annotation()`.
    - Esc: call `cancel_annotation()`.
-6. Suppress mouse events when `annotation_input` is active (same pattern as help overlay).
+6. Suppress mouse events when `annotation_input` or the delete-confirmation modal is active (same pattern as help overlay).
 7. Render annotation input bar at the bottom of the screen (above footer) when `annotation_input` is active:
    - Prompt: `annotation: ` followed by editable text with visible cursor.
    - Distinct background color to indicate input mode.
@@ -135,15 +135,19 @@ Deliverables:
 10. Render a dedicated annotation panel above diff content in detail mode and split preview:
     - Hash match or unavailable: panel title `Annotation`, body is raw annotation text.
     - Hash divergent: panel title `Annotation (Different Version)` in dimmer styling.
-11. Render annotation filter state in footer: `A: all|annotated|unannotated`.
-12. Update help overlay text with `a`, `D`, `A` keybinding descriptions.
-13. Unit/render tests:
+11. Render split preview metadata in a separate header line above the diff block, matching detail-mode framing; keep the preview block title as `Diff`.
+12. Render a centered delete-confirmation modal with `No` / `Yes` actions and keyboard navigation.
+13. Render annotation filter state in footer: `A: all|annotated|unannotated`.
+14. Update help overlay text with `a`, `D`, `A` keybinding descriptions and modal navigation guidance.
+15. Unit/render tests:
     - Input mode key handling: insert, backspace, delete, cursor movement, home/end, enter, esc.
     - 256-char max enforcement.
     - Whitespace-only enter treated as cancel.
-    - Mouse events suppressed during input mode.
+    - Mouse events suppressed during input mode and delete modal.
     - Badge rendering: `[*]` for hash-match, `[~]` for hash-divergent, no badge for unannotated.
     - Annotation panel rendering in detail view.
+    - Delete modal rendering and keyboard navigation.
+    - Split preview header renders selected file/entity metadata outside the diff block title.
     - Footer annotation filter cell renders correct token.
 
 Acceptance:
@@ -200,9 +204,11 @@ Gate:
 | filter-driven selection realignment | app tests | hidden row advances selection |
 | input mode key handling | app/render tests | insert, backspace, delete, cursor, home/end, enter, esc |
 | input mode 256-char max | app tests | char insertion rejected at limit |
-| input mode mouse suppression | app tests | mouse events ignored during input |
+| input + modal mouse suppression | app tests | mouse events ignored during input/modal |
 | badge rendering (`[*]` / `[~]`) | render tests | hash match vs divergent assertions |
-| annotation text block rendering | render tests | detail view annotation line |
+| annotation text block rendering | render tests | detail/split annotation panel |
+| delete confirmation modal | render/app tests | modal open, navigate, confirm, cancel |
+| split preview metadata header | render tests | file/entity header outside diff block |
 | hash-divergence hint | render tests | "different version" suffix |
 | footer annotation filter cell | render tests | `A: all\|annotated\|unannotated` |
 | help overlay | render tests | `a`, `D`, `A` entries present |
@@ -235,7 +241,7 @@ Gate:
 6. Risk: provenance hash hint shows false positives for formatting-only changes.
    - Mitigation: `contentHashAtCreation` uses content hash (not structural hash), so formatting changes are intentionally detected. This matches the review-state hash behavior. Structural hash comparison could be a future enhancement.
 7. Risk: annotation display in detail/split preview consumes vertical space reducing diff visibility.
-   - Mitigation: annotation is a single line; impact is minimal. No multi-line annotations in v1.
+   - Mitigation: annotation remains single-line authored content and the preview header is one line; impact is bounded in v1.
 
 ## 8. Operator Checklist and Evidence Log Schema
 

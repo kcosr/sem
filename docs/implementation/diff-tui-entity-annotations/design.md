@@ -52,7 +52,7 @@ The TUI supports marking entities as reviewed, but there is no way to attach qua
 
 ### 6.3 Keybindings
 1. `a` — add/replace annotation on selected entity. Enters inline text input mode.
-2. `D` (shift+d) — delete annotation on selected entity. First press arms deletion for the selected entity; pressing `D` again confirms. `Esc` cancels a pending delete.
+2. `D` (shift+d) — open a minimal delete-confirmation modal titled `Delete Annotation` with `No` / `Yes` actions. `Tab` / `Left` / `Right` change the selected action, `Enter` confirms, and `Esc` cancels.
 3. `A` (shift+a) — cycle annotation filter: `all → annotated → unannotated → all`.
 4. These keybindings are available in list, split, and detail modes.
 
@@ -78,7 +78,8 @@ The TUI supports marking entities as reviewed, but there is no way to attach qua
 1. **List mode**: annotated entities show a `[*]` badge after the entity name column.
 2. **Split mode sidebar**: same `[*]` badge as list mode.
 3. **Split mode preview / Detail mode**: annotation text is rendered in a dedicated annotation panel above the diff content. The panel title is `Annotation` and the body contains the raw annotation text.
-4. If the annotation's `contentHashAtCreation` is present and differs from the current entity content hash, a visual hint is shown to indicate the annotation was written against a different version of the code:
+4. **Split mode preview** mirrors detail-mode framing: the selected file/entity metadata is rendered in a separate header line above the diff block, and the diff block title remains `Diff`.
+5. If the annotation's `contentHashAtCreation` is present and differs from the current entity content hash, a visual hint is shown to indicate the annotation was written against a different version of the code:
    - **List/Split sidebar**: badge changes from `[*]` to `[~]`
    - **Detail/Split preview**: annotation panel title changes to `Annotation (Different Version)` and uses dimmer styling
    - If `contentHashAtCreation` is absent (hash material was unavailable at creation) or the current content hash cannot be computed, no hint is shown — the annotation displays normally.
@@ -135,9 +136,10 @@ Captures the input buffer, cursor position, and the identity of the entity being
 ### 7.2 Deleting an Annotation
 1. User presses `D` (shift+d) on an annotated entity.
 2. If no annotation exists for the selected entity, no-op.
-3. On first press, the app arms delete confirmation for the selected entity and shows a transient status message: `Press D again to delete annotation; Esc cancels`.
-4. On second `D` press for the same selected entity, remove the annotation from `self.annotations`, mark dirty, and show `annotation removed`.
-5. If the user presses `Esc` before confirming, the pending delete is cancelled.
+3. The app opens a minimal confirmation modal titled `Delete Annotation`.
+4. The modal defaults to `No`. `Tab` and `Left` / `Right` switch focus between `No` and `Yes`.
+5. `Enter` confirms the focused action. Confirming `Yes` removes the annotation from `self.annotations`, marks dirty, and shows `annotation removed`.
+6. `Esc` dismisses the modal and shows `annotation delete cancelled`.
 
 ### 7.3 Stepping / Snapshot Application
 1. `apply_commit_snapshot()` replaces `self.rows`.
@@ -161,7 +163,7 @@ Step/refresh responses arrive asynchronously via `ReloadCoordinator` (mod.rs:219
 ## 8. Resolved Questions
 
 ### 8.1 Delete Confirmation — RESOLVED
-Delete uses `D` (shift+d) with explicit two-step confirmation. First press arms deletion and shows `Press D again to delete annotation; Esc cancels`; second press confirms deletion. This preserves keyboard-only flow without a modal dialog.
+Delete uses `D` (shift+d) to open a keyboard-driven confirmation modal. The modal is intentionally minimal, titled `Delete Annotation`, defaults to `No`, supports `Tab` / `Left` / `Right` navigation, confirms with `Enter`, and cancels with `Esc`.
 
 ### 8.2 Keybinding Conflicts — RESOLVED
 `a` and `D` have no conflicts with existing bindings (`v`, `s`, `n`, `p`, `e`, `r`, `m`, `[`, `]`, `g`, `G`, `j`, `k`, `q`, `?`, Space, Enter, Esc, Tab, arrows, PageUp/PageDown). Lowercase `d` remains available for future use.
@@ -170,7 +172,7 @@ Delete uses `D` (shift+d) with explicit two-step confirmation. First press arms 
 Annotations work uniformly across all source modes. Annotation key generation is decoupled from `endpoint_supports_review_hash()` (unlike review identities), so annotations are available for STDIN, unsupported endpoints, and all stepping modes.
 
 ### 8.4 Input Mode and Mouse Events — RESOLVED
-While in annotation input mode, mouse events are ignored (same pattern as the help overlay).
+While annotation input or the delete-confirmation modal is active, mouse events are ignored (same pattern as the help overlay).
 
 ### 8.5 Blank/Whitespace Submit — RESOLVED
 Submitting empty or whitespace-only text is treated as cancel. No annotation is stored or deleted.
@@ -251,6 +253,7 @@ The entire persistence file is rewritten on any dirty flag change (review toggle
 - Wire `apply_review_state()` to load annotations into AppState.
 - Wire `review_state_snapshot()` to include annotations in the dirty snapshot.
 - Add `begin_annotation_input()`, `confirm_annotation()`, `cancel_annotation()`, `delete_annotation()` methods.
+- Add delete-confirmation modal state and handlers for `begin_annotation_delete_confirmation()`, modal navigation, and `confirm_annotation_delete()`.
 - Add `is_row_annotated()`, `row_annotation_text()`, and `row_annotation_hash_matches()` accessors. The hash comparison checks the row's current `targetContentHash` (from `build_target_content_hash`) against the annotation's `contentHashAtCreation`.
 
 ### Phase 3: Input Mode
@@ -262,6 +265,7 @@ The entire persistence file is rewritten on any dirty flag change (review toggle
 ### Phase 4: Rendering
 - Add `[*]` / `[~]` badge to list and split sidebar rendering for annotated entities (`[*]` when hash matches or is unavailable, `[~]` when hash differs).
 - Add annotation text block in detail and split preview rendering, with "different version" suffix when provenance hash diverges.
+- Move split preview file/entity metadata into a separate header line above the diff block and render a keyboard-driven delete confirmation modal.
 - Add input bar rendering at the bottom of the screen during input mode.
 - Style annotation display (color, prefix, dimmed variant for hash-divergent annotations).
 

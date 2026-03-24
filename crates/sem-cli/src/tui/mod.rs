@@ -112,7 +112,10 @@ pub fn run_tui(
             match event::read()? {
                 Event::Key(key) => app_state.handle_key(key),
                 Event::Mouse(mouse) => {
-                    if app_state.show_help() || app_state.annotation_input_active() {
+                    if app_state.show_help()
+                        || app_state.annotation_input_active()
+                        || app_state.annotation_delete_modal_active()
+                    {
                         continue;
                     }
 

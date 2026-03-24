@@ -30,12 +30,12 @@ Define runtime and persistence contracts for per-entity text annotations in the 
 ### 2.2 Runtime Delete Annotation Action (internal, keybinding: D)
 ```json
 {
-  "action": "confirmDeleteAnnotation",
+  "action": "openDeleteAnnotationModal",
   "entity": {
     "logicalEntityKey": "entityId::src/auth.ts::function::validateToken"
   },
-  "confirmation": {
-    "armed": true
+  "modal": {
+    "selectedAction": "cancel"
   }
 }
 ```
@@ -43,7 +43,10 @@ Define runtime and persistence contracts for per-entity text annotations in the 
 ### 2.3 Footer Cells (internal)
 Add one footer cell for the annotation filter state: `A: all|annotated|unannotated`. Annotation presence is still indicated per-entity via `[*]` / `[~]` badges.
 
-### 2.4 Persistence File Example (extended)
+### 2.4 Split Preview Header (internal)
+In split mode, the selected file/entity metadata is rendered in a separate header line above the preview diff block. The preview diff block title remains `Diff`, matching detail mode.
+
+### 2.5 Persistence File Example (extended)
 ```json
 {
   "version": 1,
@@ -220,6 +223,24 @@ struct AnnotationInputState {
     cursor_position: usize,
     target_logical_entity_key: String,
     target_content_hash: Option<String>,
+}
+```
+
+### 4.4 AnnotationDeleteConfirmationState
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnnotationDeleteConfirmationState {
+    target_logical_entity_key: String,
+    selected_action: AnnotationDeleteAction,
+}
+```
+
+### 4.5 AnnotationDeleteAction
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnotationDeleteAction {
+    Cancel,
+    Delete,
 }
 ```
 
