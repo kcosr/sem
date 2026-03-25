@@ -13,6 +13,8 @@
 - `Space` on a file row now toggles review state for the whole file’s child entity set, with derived `mixed` state when only some children are reviewed.
 - Annotation behavior remains entity-scoped: file rows are visible only when at least one child entity survives the active review and annotation filters.
 - Detail-mode `Left` and `Right`, plus `Up`/`Down` in list and split, now follow the active navigation mode.
+- File-scope `hunk` mode now suppresses filtered-out entity-backed hunks while preserving residual non-entity file changes, so file rows remain useful after entity review.
+- In split preview focus, `Left`/`Right` now navigate previous/next scope and `g/G` jump top/bottom of the diff content.
 - Footer/help copy now describes scope-aware navigation and `e` as `hunk/full scope`.
 
 ### Testing

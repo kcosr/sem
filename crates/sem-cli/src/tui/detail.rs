@@ -2,6 +2,25 @@ use sem_core::model::change::SemanticChange;
 use similar::{ChangeTag, TextDiff};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileLineRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FileEntityLineRanges {
+    pub old_range: Option<FileLineRange>,
+    pub new_range: Option<FileLineRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct FileScopeHunkFilter {
+    pub visible_entity_ranges: Vec<FileEntityLineRanges>,
+    pub all_entity_ranges: Vec<FileEntityLineRanges>,
+    pub show_residual: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityContextMode {
     Hunk,
     Entity,
@@ -82,6 +101,7 @@ pub fn render_change(change: &SemanticChange, context_mode: EntityContextMode) -
         context_mode,
         change.before_start_line.unwrap_or(1),
         change.after_start_line.unwrap_or(1),
+        None,
     )
 }
 
@@ -89,8 +109,26 @@ pub fn render_file_snapshot(
     before: Option<&str>,
     after: Option<&str>,
     context_mode: EntityContextMode,
+    hunk_filter: Option<&FileScopeHunkFilter>,
 ) -> RenderedDiff {
-    render_text_diff(before, after, context_mode, 1, 1)
+    render_text_diff(before, after, context_mode, 1, 1, hunk_filter)
+}
+
+pub fn file_snapshot_has_visible_hunks(
+    before: Option<&str>,
+    after: Option<&str>,
+    hunk_filter: &FileScopeHunkFilter,
+) -> bool {
+    let before = before.unwrap_or("");
+    let after = after.unwrap_or("");
+    if before.is_empty() && after.is_empty() {
+        return false;
+    }
+
+    let diff = TextDiff::from_lines(before, after);
+    diff.grouped_ops(3)
+        .into_iter()
+        .any(|group| group_matches_filter(&diff, &group, 1, 1, hunk_filter))
 }
 
 fn render_text_diff(
@@ -99,6 +137,7 @@ fn render_text_diff(
     context_mode: EntityContextMode,
     base_old: usize,
     base_new: usize,
+    hunk_filter: Option<&FileScopeHunkFilter>,
 ) -> RenderedDiff {
     let before = before.unwrap_or("");
     let after = after.unwrap_or("");
@@ -108,7 +147,9 @@ fn render_text_diff(
     }
 
     match context_mode {
-        EntityContextMode::Hunk => render_grouped_change(before, after, base_old, base_new),
+        EntityContextMode::Hunk => {
+            render_grouped_change(before, after, base_old, base_new, hunk_filter)
+        }
         EntityContextMode::Entity => render_full_entity_change(before, after, base_old, base_new),
     }
 }
@@ -118,9 +159,18 @@ fn render_grouped_change(
     after: &str,
     base_old: usize,
     base_new: usize,
+    hunk_filter: Option<&FileScopeHunkFilter>,
 ) -> RenderedDiff {
     let diff = TextDiff::from_lines(before, after);
-    let groups = diff.grouped_ops(3);
+    let groups: Vec<_> = diff
+        .grouped_ops(3)
+        .into_iter()
+        .filter(|group| {
+            hunk_filter
+                .map(|filter| group_matches_filter(&diff, group, base_old, base_new, filter))
+                .unwrap_or(true)
+        })
+        .collect();
     if groups.is_empty() {
         return RenderedDiff::message("no hunks available");
     }
@@ -286,6 +336,125 @@ fn render_groups(
         unified_lines,
         side_by_side_lines,
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct HunkChangeCoverage {
+    old_changed_ranges: Vec<FileLineRange>,
+    new_changed_ranges: Vec<FileLineRange>,
+}
+
+fn group_matches_filter(
+    diff: &TextDiff<'_, '_, '_, str>,
+    group: &[similar::DiffOp],
+    base_old: usize,
+    base_new: usize,
+    filter: &FileScopeHunkFilter,
+) -> bool {
+    let coverage = group_change_coverage(diff, group, base_old, base_new);
+
+    if coverage
+        .old_changed_ranges
+        .iter()
+        .any(|range| overlaps_entity_ranges(Some(*range), None, &filter.visible_entity_ranges))
+        || coverage
+            .new_changed_ranges
+            .iter()
+            .any(|range| overlaps_entity_ranges(None, Some(*range), &filter.visible_entity_ranges))
+    {
+        return true;
+    }
+
+    filter.show_residual
+        && (coverage
+            .old_changed_ranges
+            .iter()
+            .any(|range| !range_fully_covered(Some(*range), None, &filter.all_entity_ranges))
+            || coverage
+                .new_changed_ranges
+                .iter()
+                .any(|range| !range_fully_covered(None, Some(*range), &filter.all_entity_ranges)))
+}
+
+fn group_change_coverage(
+    diff: &TextDiff<'_, '_, '_, str>,
+    group: &[similar::DiffOp],
+    base_old: usize,
+    base_new: usize,
+) -> HunkChangeCoverage {
+    let mut coverage = HunkChangeCoverage::default();
+
+    for op in group {
+        let mut old_line = base_old.saturating_add(op.old_range().start);
+        let mut new_line = base_new.saturating_add(op.new_range().start);
+        for diff_change in diff.iter_changes(op) {
+            let count = line_count(diff_change.value());
+            match diff_change.tag() {
+                ChangeTag::Delete => {
+                    coverage.old_changed_ranges.push(FileLineRange {
+                        start: old_line,
+                        end: old_line.saturating_add(count).saturating_sub(1),
+                    });
+                    old_line = old_line.saturating_add(count);
+                }
+                ChangeTag::Insert => {
+                    coverage.new_changed_ranges.push(FileLineRange {
+                        start: new_line,
+                        end: new_line.saturating_add(count).saturating_sub(1),
+                    });
+                    new_line = new_line.saturating_add(count);
+                }
+                ChangeTag::Equal => {
+                    old_line = old_line.saturating_add(count);
+                    new_line = new_line.saturating_add(count);
+                }
+            }
+        }
+    }
+
+    coverage
+}
+
+fn overlaps_entity_ranges(
+    old_range: Option<FileLineRange>,
+    new_range: Option<FileLineRange>,
+    entity_ranges: &[FileEntityLineRanges],
+) -> bool {
+    entity_ranges.iter().any(|entity| {
+        ranges_overlap(old_range, entity.old_range) || ranges_overlap(new_range, entity.new_range)
+    })
+}
+
+fn range_fully_covered(
+    old_range: Option<FileLineRange>,
+    new_range: Option<FileLineRange>,
+    entity_ranges: &[FileEntityLineRanges],
+) -> bool {
+    let old_covered = old_range.map(|range| {
+        entity_ranges
+            .iter()
+            .filter_map(|entity| entity.old_range)
+            .any(|entity_range| contains_range(entity_range, range))
+    });
+    let new_covered = new_range.map(|range| {
+        entity_ranges
+            .iter()
+            .filter_map(|entity| entity.new_range)
+            .any(|entity_range| contains_range(entity_range, range))
+    });
+
+    old_covered.unwrap_or(true) && new_covered.unwrap_or(true)
+}
+
+fn ranges_overlap(left: Option<FileLineRange>, right: Option<FileLineRange>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.start <= right.end && right.start <= left.end,
+        _ => false,
+    }
+}
+
+fn contains_range(container: FileLineRange, candidate: FileLineRange) -> bool {
+    container.start <= candidate.start && container.end >= candidate.end
 }
 
 fn changed_region_unified_anchors(lines: &[(LineKind, String)]) -> Vec<usize> {

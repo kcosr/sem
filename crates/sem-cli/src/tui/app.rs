@@ -16,7 +16,8 @@ use crate::commands::diff::{
 };
 
 use super::detail::{
-    render_change, render_file_snapshot, EntityContextMode, LineKind, RenderedDiff,
+    file_snapshot_has_visible_hunks, render_change, render_file_snapshot, EntityContextMode,
+    FileEntityLineRanges, FileLineRange, FileScopeHunkFilter, LineKind, RenderedDiff,
     SideBySideLine,
 };
 
@@ -992,17 +993,23 @@ impl AppState {
     }
 
     pub fn render_selected_scope(&self) -> Option<RenderedDiff> {
-        self.selected_row().map(|row| self.render_scope_row(row))
+        let row_index = self.selected_row_index()?;
+        self.rows
+            .get(row_index)
+            .map(|row| self.render_scope_row(row_index, row))
     }
 
-    fn render_scope_row(&self, row: &ScopeRow) -> RenderedDiff {
+    fn render_scope_row(&self, row_index: usize, row: &ScopeRow) -> RenderedDiff {
         match row.row_kind {
             ScopeRowKind::File => {
                 let snapshot = self.file_snapshots.get(&row.file_path);
+                let hunk_filter = (self.entity_context_mode == EntityContextMode::Hunk)
+                    .then(|| self.file_scope_hunk_filter(row_index));
                 render_file_snapshot(
                     snapshot.and_then(|snapshot| snapshot.before_content.as_deref()),
                     snapshot.and_then(|snapshot| snapshot.after_content.as_deref()),
                     self.entity_context_mode,
+                    hunk_filter.as_ref(),
                 )
             }
             ScopeRowKind::Entity => row
@@ -1275,8 +1282,12 @@ impl AppState {
     }
 
     fn refresh_detail(&mut self) {
-        if let Some(row) = self.selected_row() {
-            self.detail = Some(self.render_scope_row(row));
+        if let Some(row_index) = self.selected_row_index() {
+            if let Some(row) = self.rows.get(row_index) {
+                self.detail = Some(self.render_scope_row(row_index, row));
+            } else {
+                self.detail = None;
+            }
         } else {
             self.detail = None;
         }
@@ -1399,8 +1410,12 @@ impl AppState {
 
         if self.mode == Mode::Detail {
             let prior_hunk_index = self.detail_hunk_index;
-            if let Some(row) = self.selected_row() {
-                self.detail = Some(self.render_scope_row(row));
+            if let Some(row_index) = self.selected_row_index() {
+                if let Some(row) = self.rows.get(row_index) {
+                    self.detail = Some(self.render_scope_row(row_index, row));
+                } else {
+                    self.detail = None;
+                }
             } else {
                 self.detail = None;
             }
@@ -1449,8 +1464,12 @@ impl AppState {
     }
 
     fn sync_active_selection_detail(&mut self) {
-        if let Some(row) = self.selected_row() {
-            self.detail = Some(self.render_scope_row(row));
+        if let Some(row_index) = self.selected_row_index() {
+            if let Some(row) = self.rows.get(row_index) {
+                self.detail = Some(self.render_scope_row(row_index, row));
+            } else {
+                self.detail = None;
+            }
         } else {
             self.detail = None;
         }
@@ -1574,6 +1593,7 @@ impl AppState {
             .skip(row_index + 1)
             .take_while(|(_, child)| child.row_kind != ScopeRowKind::File)
             .any(|(child_index, _)| self.entity_row_matches_filter(child_index))
+            || self.file_row_has_visible_residual_hunks(row_index)
     }
 
     fn file_child_entity_indices(&self, row_index: usize) -> Vec<usize> {
@@ -1605,6 +1625,56 @@ impl AppState {
                     .cloned()
             })
             .collect()
+    }
+
+    fn file_scope_hunk_filter(&self, row_index: usize) -> FileScopeHunkFilter {
+        let child_indices = self.file_child_entity_indices(row_index);
+        let all_entity_ranges: Vec<_> = child_indices
+            .iter()
+            .filter_map(|child_index| self.file_entity_line_ranges(*child_index))
+            .collect();
+        let visible_entity_ranges: Vec<_> = child_indices
+            .iter()
+            .copied()
+            .filter(|child_index| self.entity_row_matches_filter(*child_index))
+            .filter_map(|child_index| self.file_entity_line_ranges(child_index))
+            .collect();
+
+        FileScopeHunkFilter {
+            visible_entity_ranges,
+            all_entity_ranges,
+            show_residual: self.review_filter != ReviewFilter::Reviewed
+                && self.annotation_filter != AnnotationFilter::Annotated,
+        }
+    }
+
+    fn file_row_has_visible_residual_hunks(&self, row_index: usize) -> bool {
+        if self.review_filter == ReviewFilter::Reviewed
+            || self.annotation_filter == AnnotationFilter::Annotated
+        {
+            return false;
+        }
+
+        let Some(row) = self.rows.get(row_index) else {
+            return false;
+        };
+        let Some(snapshot) = self.file_snapshots.get(&row.file_path) else {
+            return false;
+        };
+        let filter = self.file_scope_hunk_filter(row_index);
+        file_snapshot_has_visible_hunks(
+            snapshot.before_content.as_deref(),
+            snapshot.after_content.as_deref(),
+            &filter,
+        )
+    }
+
+    fn file_entity_line_ranges(&self, row_index: usize) -> Option<FileEntityLineRanges> {
+        let change = self.rows.get(row_index)?.change.as_ref()?;
+        Some(FileEntityLineRanges {
+            old_range: file_line_range(change.before_start_line, change.before_end_line),
+            new_range: file_line_range(change.after_start_line, change.after_end_line),
+        })
     }
 
     fn row_index_matches_navigation_mode(&self, row_index: usize) -> bool {
@@ -2064,6 +2134,13 @@ fn range_label(change: &SemanticChange) -> Option<String> {
     }
 }
 
+fn file_line_range(start: Option<usize>, end: Option<usize>) -> Option<FileLineRange> {
+    match (start, end) {
+        (Some(start), Some(end)) if start > 0 && end >= start => Some(FileLineRange { start, end }),
+        _ => None,
+    }
+}
+
 fn change_line_counts(change: &SemanticChange) -> (usize, usize) {
     let before = change.before_content.as_deref().unwrap_or("");
     let after = change.after_content.as_deref().unwrap_or("");
@@ -2140,6 +2217,36 @@ mod tests {
             Some(before),
             Some(after),
         )
+    }
+
+    fn change_with_range(
+        file: &str,
+        name: &str,
+        entity_id: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+        before_range: Option<(usize, usize)>,
+        after_range: Option<(usize, usize)>,
+    ) -> SemanticChange {
+        SemanticChange {
+            id: format!("change::{name}"),
+            entity_id: entity_id.to_string(),
+            change_type: ChangeType::Modified,
+            entity_type: "function".to_string(),
+            entity_name: name.to_string(),
+            file_path: file.to_string(),
+            old_file_path: None,
+            before_content: before.map(str::to_string),
+            after_content: after.map(str::to_string),
+            commit_sha: None,
+            author: None,
+            timestamp: None,
+            structural_change: Some(true),
+            before_start_line: before_range.map(|range| range.0),
+            before_end_line: before_range.map(|range| range.1),
+            after_start_line: after_range.map(|range| range.0),
+            after_end_line: after_range.map(|range| range.1),
+        }
     }
 
     fn change_with_identity(
@@ -2228,6 +2335,51 @@ mod tests {
                 TuiFileSnapshot {
                     before_content: Some(BASELINE_BEFORE.to_string()),
                     after_content: Some(BASELINE_AFTER.to_string()),
+                },
+            )]),
+            DiffView::Unified,
+        )
+    }
+
+    fn residual_file_app() -> AppState {
+        let before = "// header\n\n\n\n\n\n\n\n\nfn alpha() {\n  old_alpha();\n}\n\nfn beta() {\n  old_beta();\n}\n";
+        let after = "// header updated\n\n\n\n\n\n\n\n\nfn alpha() {\n  new_alpha();\n}\n\nfn beta() {\n  new_beta();\n}\n";
+        let result = DiffResult {
+            changes: vec![
+                change_with_range(
+                    "src/file.rs",
+                    "alpha",
+                    "src/file.rs::alpha",
+                    Some("fn alpha() {\n  old_alpha();\n}\n"),
+                    Some("fn alpha() {\n  new_alpha();\n}\n"),
+                    Some((10, 12)),
+                    Some((10, 12)),
+                ),
+                change_with_range(
+                    "src/file.rs",
+                    "beta",
+                    "src/file.rs::beta",
+                    Some("fn beta() {\n  old_beta();\n}\n"),
+                    Some("fn beta() {\n  new_beta();\n}\n"),
+                    Some((14, 16)),
+                    Some((14, 16)),
+                ),
+            ],
+            file_count: 1,
+            added_count: 0,
+            modified_count: 2,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        };
+
+        AppState::from_diff_result_with_snapshots(
+            &result,
+            HashMap::from([(
+                "src/file.rs".to_string(),
+                TuiFileSnapshot {
+                    before_content: Some(before.to_string()),
+                    after_content: Some(after.to_string()),
                 },
             )]),
             DiffView::Unified,
@@ -3489,6 +3641,51 @@ mod tests {
         assert_eq!(app.row_review_state(0), RowReviewState::Unreviewed);
         assert_eq!(app.row_review_state(1), RowReviewState::Unreviewed);
         assert_eq!(app.row_review_state(2), RowReviewState::Unreviewed);
+    }
+
+    #[test]
+    fn file_row_stays_visible_for_unreviewed_residual_hunks_after_all_entities_are_reviewed() {
+        let mut app = residual_file_app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        app.selected = 1;
+        assert!(app.toggle_selected_reviewed());
+        app.selected = 2;
+        assert!(app.toggle_selected_reviewed());
+
+        app.cycle_review_filter();
+        assert_eq!(app.review_filter(), ReviewFilter::Unreviewed);
+        assert_eq!(app.visible_row_indices(), vec![0]);
+
+        app.selected = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let rendered_hunk = app
+            .unified_lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_hunk.contains("header updated"));
+        assert!(!rendered_hunk.contains("new_alpha"));
+        assert!(!rendered_hunk.contains("new_beta"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let rendered_full = app
+            .unified_lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered_full.contains("new_alpha"));
+        assert!(rendered_full.contains("new_beta"));
     }
 
     #[test]

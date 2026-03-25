@@ -97,7 +97,7 @@ sem blame src/auth.ts
 - `m`: toggle `pairwise` / `cumulative` step mode
 - `e`: toggle `hunk` / `entity` detail context mode for the selected scope
 - `f`: cycle navigation mode (`mixed` -> `entity` -> `file`) for `↑/↓`, `j/k`, and detail `←/→`
-- `←/→`: in `detail`, move to previous/next scope using the active navigation mode
+- `←/→`: in `detail`, and in `split` when preview is focused, move to previous/next scope using the active navigation mode
 - `Esc`: close `detail` and return to prior non-detail view
 - `Tab`: toggle split focus between sidebar and preview
 - `s`: toggle unified vs side-by-side in `detail` and split preview
@@ -114,6 +114,7 @@ Startup defaults:
 - `--step-mode pairwise|cumulative` overrides startup only (`m` still toggles in-session)
 Pseudo-endpoints (`INDEX`, `WORKING`) are also supported in `--from/--to` outside TUI.
 Review state is persisted per-repo in `.sem/tui-review-state.json` (local metadata; `.sem/` is gitignored by default).
+In file-scope `hunk` mode, reviewed entity-backed hunks are filtered out under review filters while residual non-entity file changes remain visible when applicable. File-scope full-file mode remains an unfiltered raw diff view.
 
 ## What it parses
 
