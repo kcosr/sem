@@ -15,10 +15,14 @@ Primary command remains:
 - `sem diff --tui`
 
 ### 2.2 Runtime Inputs
-- `j/k` / arrows: move across selectable rows (file + entity)
+- `j/k` / arrows: move across scope rows allowed by the active navigation mode
 - `Enter`: open detail for selected row scope
 - `e`: toggle hunk/full for selected scope
+- `f`: cycle navigation mode (`mixed`, `entity`, `file`)
 - `n/p`: navigate hunks for selected scope when hunk anchors exist
+- `a` / `D`: annotation actions for entity rows only; no-op on file rows
+- `A`: annotation filter remains entity-scoped and affects file-row visibility indirectly through child rows
+- `Left/Right` in detail: move to previous/next scope row allowed by active navigation mode
 
 ## 3. Runtime Scope Model (Conceptual)
 
@@ -65,7 +69,16 @@ Notes:
 {
   "$id": "sem.tui.file-scope.contract.v1",
   "type": "object",
-  "required": ["rowScope", "scopeToggle", "entityScopeBehavior", "fileScopeBehavior", "dataInputs"],
+  "required": [
+    "rowScope",
+    "scopeToggle",
+    "navigationMode",
+    "entityScopeBehavior",
+    "fileScopeBehavior",
+    "dataInputs",
+    "filterBehavior",
+    "detailNavigation"
+  ],
   "properties": {
     "rowScope": {
       "type": "string",
@@ -79,6 +92,15 @@ Notes:
         "modes": {"type": "array", "const": ["hunk", "entity"]}
       }
     },
+    "navigationMode": {
+      "type": "object",
+      "required": ["key", "modes", "persisted"],
+      "properties": {
+        "key": {"type": "string", "const": "f"},
+        "modes": {"type": "array", "const": ["mixed", "entity", "file"]},
+        "persisted": {"type": "boolean", "const": true}
+      }
+    },
     "entityScopeBehavior": {
       "type": "object",
       "required": ["hunkMode", "entityMode"],
@@ -89,19 +111,58 @@ Notes:
     },
     "fileScopeBehavior": {
       "type": "object",
-      "required": ["hunkMode", "entityMode", "hunkOrdering"],
+      "required": [
+        "hunkMode",
+        "entityMode",
+        "hunkOrdering",
+        "reviewable",
+        "reviewAggregation",
+        "annotatable"
+      ],
       "properties": {
         "hunkMode": {"type": "string", "const": "groupedFileHunks"},
         "entityMode": {"type": "string", "const": "fullFileDiff"},
-        "hunkOrdering": {"type": "string", "const": "fileLineOrderAscending"}
+        "hunkOrdering": {"type": "string", "const": "fileLineOrderAscending"},
+        "reviewable": {"type": "boolean", "const": true},
+        "reviewAggregation": {
+          "type": "string",
+          "const": "derivedFromChildEntityReviewRecords"
+        },
+        "annotatable": {"type": "boolean", "const": false}
       }
     },
     "dataInputs": {
       "type": "object",
-      "required": ["fileSnapshotsFromFileChange", "snapshotMapUsedByTui"],
+      "required": ["fileSnapshotsFromFileChange", "snapshotMapUsedByTui", "stepSnapshotsCarryFileSnapshots"],
       "properties": {
         "fileSnapshotsFromFileChange": {"type": "boolean", "const": true},
-        "snapshotMapUsedByTui": {"type": "boolean", "const": true}
+        "snapshotMapUsedByTui": {"type": "boolean", "const": true},
+        "stepSnapshotsCarryFileSnapshots": {"type": "boolean", "const": true}
+      }
+    },
+    "filterBehavior": {
+      "type": "object",
+      "required": ["annotationScope", "fileVisibilityRule"],
+      "properties": {
+        "annotationScope": {"type": "string", "const": "entityOnly"},
+        "fileVisibilityRule": {
+          "type": "string",
+          "const": "showFileRowWhenAtLeastOneChildEntityIsVisible"
+        }
+      }
+    },
+    "detailNavigation": {
+      "type": "object",
+      "required": ["leftRightBehavior", "upDownBehavior"],
+      "properties": {
+        "leftRightBehavior": {
+          "type": "string",
+          "const": "moveAcrossScopeRowsAllowedByNavigationMode"
+        },
+        "upDownBehavior": {
+          "type": "string",
+          "const": "moveAcrossScopeRowsAllowedByNavigationMode"
+        }
       }
     }
   }
@@ -112,6 +173,8 @@ Notes:
 1. No new CLI endpoint or flag is added.
 2. TUI row model includes selectable file rows.
 3. File detail rendering semantics are locked by scope mode.
+4. File review state is aggregate-only; file rows do not create persisted file review records.
+5. Annotation behavior remains entity-scoped; file rows do not create annotation records.
 
 ## 6. Deterministic Reject / Status Lock
 1. Selected file row without snapshot data must not panic; it renders placeholder.

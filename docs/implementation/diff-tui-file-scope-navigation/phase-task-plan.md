@@ -24,6 +24,10 @@ Deliverables:
 3. Lock scope-aware semantics for `e`, `n/p`, and detail title.
 4. Lock file snapshot source and TUI payload contract (`FileChange` -> snapshot map).
 5. Lock filter-selection behavior (file row hidden when no visible children; deterministic fallback selection).
+6. Lock navigation mode semantics and persistence (`mixed`, `entity`, `file`).
+7. Lock file-row aggregate review semantics, including `mixed` state and whole-file toggles.
+8. Lock annotation boundary: file rows are non-annotatable, and annotation filtering only affects them through child entities.
+9. Lock detail `Left/Right` semantics across scope rows allowed by navigation mode.
 
 Acceptance:
 1. No ambiguity in file-vs-entity selection behavior.
@@ -39,12 +43,14 @@ Deliverables:
 2. Implement scope row model and list building (`File` + `Entity` rows).
 3. Implement file-row aggregate delta fields (sum of child added/removed lines).
 4. Keep selection/filter/review state deterministic across row kinds.
-5. Add app-state + plumbing tests.
+5. Carry file snapshot maps through startup and step-refresh payloads.
+6. Add app-state + plumbing tests.
 
 Acceptance:
 1. File rows appear and are selectable.
 2. Existing entity rows still render/navigate correctly.
 3. Aggregate file delta values match child entity sums.
+4. File rows stay renderable after commit-step reloads.
 
 Gate:
 - GO only with passing `sem-cli` tests for row/scope plumbing.
@@ -54,8 +60,9 @@ Deliverables:
 1. Implement file-scope hunk renderer (grouped file hunks, line-ascending order).
 2. Implement file-scope full renderer (whole-file expansion).
 3. Wire scope-aware `e` and `n/p` behavior.
-4. Add deterministic handling for added/deleted/binary/missing-content file cases.
-5. Add renderer/navigation tests for file scope.
+4. Wire tri-state navigation mode through `Up/Down` and detail `Left/Right`.
+5. Add deterministic handling for added/deleted/binary/missing-content file cases.
+6. Add renderer/navigation tests for file scope.
 
 Acceptance:
 1. File + hunk mode shows file hunks and supports navigation.
@@ -72,6 +79,9 @@ Deliverables:
 2. Update README docs and changelog.
 3. Add hardening tests for:
    - filter-selection fallback across mixed row kinds,
+   - navigation-mode selection skipping,
+   - file-row aggregate review toggles and mixed review display,
+   - annotation-filter-driven file-row visibility,
    - row-boundary navigation,
    - edge file states,
    - regression of entity behavior.
@@ -95,13 +105,18 @@ Gate:
 | visual distinction | render test | file rows rendered with locked file styling/indent contract |
 | aggregate deltas | app/render test | file row `+/-` equals sum of child entity deltas |
 | data plumbing | unit/integration test | snapshot map passed from `FileChange` to TUI |
+| step refresh plumbing | unit/integration test | file snapshot map survives commit-step reload/application |
 | file-hunk mode | render test | selected file shows grouped file hunks |
 | file-full mode | render test | selected file shows whole-file diff |
 | hunk ordering | render test | file-scope hunks are line-ascending |
 | scope toggle | app/render test | `e` toggles hunk/full for both row kinds |
 | hunk navigation | app/render test | `n/p` navigates file-scope hunks |
+| navigation mode | app/render test | `f` cycles mixed/entity/file and persists |
+| detail scope navigation | app/render test | `Left/Right` moves across scope rows allowed by navigation mode |
 | filter fallback | app/render test | hidden selected row reselects deterministic visible row |
 | file row visibility | app/render test | file row hidden when no visible child rows remain |
+| file review aggregation | app/render test | file rows derive reviewed/unreviewed/mixed from child entities and toggle whole-file review state |
+| annotation boundary | app/render test | file rows ignore `a`/`D` and never own annotation state |
 | boundary navigation | app test | deterministic top/bottom behavior across mixed row kinds |
 | edge file states | safety tests | added/deleted/binary/missing snapshot handling |
 | entity regression | regression test | entity rows keep existing behavior |

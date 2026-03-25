@@ -23,7 +23,7 @@ use sem_core::parser::differ::DiffResult;
 use crate::commands::diff::{
     process_commit_refresh_request, process_commit_step_request, CommitLoadStatus,
     CommitNavigationContext, CommitRefreshRequest, CommitStepRequest, CommitStepResponse, DiffView,
-    StepMode, StepNavigationBootstrap, TuiSourceMode,
+    StepMode, StepNavigationBootstrap, TuiFileSnapshot, TuiSourceMode,
 };
 use app::PendingNavigationRequest;
 use review_state::ReviewStateStoreInit;
@@ -32,6 +32,7 @@ const REVIEW_STATE_DEBOUNCE_MS: u64 = 500;
 
 pub fn run_tui(
     result: &DiffResult,
+    file_snapshots: HashMap<String, TuiFileSnapshot>,
     initial_view: DiffView,
     navigation_bootstrap: Option<StepNavigationBootstrap>,
 ) -> io::Result<()> {
@@ -43,7 +44,8 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app_state = app::AppState::from_diff_result(result, initial_view);
+    let mut app_state =
+        app::AppState::from_diff_result_with_snapshots(result, file_snapshots, initial_view);
     render::prewarm_syntax_highlighting_async();
     let (context, source_mode, cursor, mode, base_endpoint_id) =
         if let Some(bootstrap) = navigation_bootstrap {

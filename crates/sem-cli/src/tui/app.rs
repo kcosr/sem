@@ -7,29 +7,39 @@ use std::collections::HashMap;
 use super::review_state::{
     build_logical_entity_key, build_target_content_hash, current_updated_at,
     endpoint_supports_review_hash, Annotation, AnnotationFilter, PersistedDiffView,
-    PersistedEntityContextMode, PersistedViewMode, ReviewFilter, ReviewIdentity, ReviewStateData,
-    ReviewStateUiPrefs,
+    PersistedEntityContextMode, PersistedNavigationMode, PersistedViewMode, ReviewFilter,
+    ReviewIdentity, ReviewStateData, ReviewStateUiPrefs,
 };
 use crate::commands::diff::{
     CommitCursor, CommitLoadStatus, CommitSnapshot, CommitStepAction, CommitStepResponse, DiffView,
-    StepComparison, StepEndpoint, StepMode, TuiSourceMode,
+    StepComparison, StepEndpoint, StepMode, TuiFileSnapshot, TuiSourceMode,
 };
 
-use super::detail::{render_change, EntityContextMode, LineKind, RenderedDiff, SideBySideLine};
+use super::detail::{
+    render_change, render_file_snapshot, EntityContextMode, LineKind, RenderedDiff,
+    SideBySideLine,
+};
 
 const MIN_SIDE_BY_SIDE_WIDTH: u16 = 120;
 const MIN_SPLIT_PREVIEW_WIDTH: u16 = 80;
 const MAX_ANNOTATION_LENGTH: usize = 256;
 
 #[derive(Clone, Debug)]
-pub struct EntityRow {
+pub struct ScopeRow {
+    pub row_kind: ScopeRowKind,
     pub file_path: String,
     pub entity_type: String,
     pub entity_name: String,
     pub added_lines: usize,
     pub removed_lines: usize,
     pub range_label: Option<String>,
-    pub change: SemanticChange,
+    pub change: Option<SemanticChange>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeRowKind {
+    File,
+    Entity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +47,40 @@ pub enum Mode {
     List,
     Split,
     Detail,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RowNavigationMode {
+    #[default]
+    Mixed,
+    Entity,
+    File,
+}
+
+impl RowNavigationMode {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Mixed => Self::Entity,
+            Self::Entity => Self::File,
+            Self::File => Self::Mixed,
+        }
+    }
+
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::Mixed => "mixed",
+            Self::Entity => "entity",
+            Self::File => "file",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowReviewState {
+    Unavailable,
+    Unreviewed,
+    Reviewed,
+    Mixed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,12 +135,13 @@ pub struct AnnotationDeleteModal<'a> {
 
 #[derive(Debug)]
 pub struct AppState {
-    rows: Vec<EntityRow>,
+    rows: Vec<ScopeRow>,
     selected: usize,
     mode: Mode,
     last_non_detail_mode: Mode,
     requested_view: DiffView,
     entity_context_mode: EntityContextMode,
+    navigation_mode: RowNavigationMode,
     split_focus: SplitFocus,
     detail_scroll: usize,
     detail_hunk_index: usize,
@@ -112,6 +157,7 @@ pub struct AppState {
     step_mode: StepMode,
     cumulative_base_endpoint_id: Option<String>,
     comparison: Option<StepComparison>,
+    file_snapshots: HashMap<String, TuiFileSnapshot>,
     commit_loading: bool,
     commit_status_message: Option<String>,
     pending_navigation_request: Option<PendingNavigationRequest>,
@@ -135,16 +181,30 @@ pub enum PendingNavigationRequest {
 
 impl AppState {
     pub fn from_diff_result(result: &DiffResult, initial_view: DiffView) -> Self {
+        Self::from_diff_result_with_snapshots(
+            result,
+            file_snapshots_from_diff_result(result),
+            initial_view,
+        )
+    }
+
+    pub fn from_diff_result_with_snapshots(
+        result: &DiffResult,
+        file_snapshots: HashMap<String, TuiFileSnapshot>,
+        initial_view: DiffView,
+    ) -> Self {
         let rows = Self::rows_from_diff_result(result);
         let row_count = rows.len();
+        let selected = Self::initial_selected_index(&rows);
 
         let mut app = Self {
             rows,
-            selected: 0,
+            selected,
             mode: Mode::List,
             last_non_detail_mode: Mode::List,
             requested_view: initial_view,
             entity_context_mode: EntityContextMode::Hunk,
+            navigation_mode: RowNavigationMode::Mixed,
             split_focus: SplitFocus::Sidebar,
             detail_scroll: 0,
             detail_hunk_index: 0,
@@ -160,6 +220,7 @@ impl AppState {
             step_mode: StepMode::Pairwise,
             cumulative_base_endpoint_id: None,
             comparison: None,
+            file_snapshots,
             commit_loading: false,
             commit_status_message: None,
             pending_navigation_request: None,
@@ -178,26 +239,57 @@ impl AppState {
         app
     }
 
-    fn rows_from_diff_result(result: &DiffResult) -> Vec<EntityRow> {
+    fn rows_from_diff_result(result: &DiffResult) -> Vec<ScopeRow> {
         let mut changes = result.changes.clone();
         // Stable sort groups by file while preserving semantic order within each file.
         changes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
-        changes
-            .into_iter()
-            .map(|change| {
-                let (added_lines, removed_lines) = change_line_counts(&change);
-                EntityRow {
+        let mut rows = Vec::new();
+        let mut index = 0usize;
+        while index < changes.len() {
+            let file_path = changes[index].file_path.clone();
+            let mut file_rows = Vec::new();
+            let mut file_added_lines = 0usize;
+            let mut file_removed_lines = 0usize;
+
+            while index < changes.len() && changes[index].file_path == file_path {
+                let change = changes[index].clone();
+                let (row_added_lines, row_removed_lines) = change_line_counts(&change);
+                file_rows.push(ScopeRow {
+                    row_kind: ScopeRowKind::Entity,
                     file_path: change.file_path.clone(),
                     entity_type: change.entity_type.clone(),
                     entity_name: change.entity_name.clone(),
-                    added_lines,
-                    removed_lines,
+                    added_lines: row_added_lines,
+                    removed_lines: row_removed_lines,
                     range_label: range_label(&change),
-                    change,
-                }
-            })
-            .collect()
+                    change: Some(change),
+                });
+                file_added_lines = file_added_lines.saturating_add(row_added_lines);
+                file_removed_lines = file_removed_lines.saturating_add(row_removed_lines);
+                index = index.saturating_add(1);
+            }
+
+            rows.push(ScopeRow {
+                row_kind: ScopeRowKind::File,
+                file_path: file_path.clone(),
+                entity_type: "file".to_string(),
+                entity_name: file_path,
+                added_lines: file_added_lines,
+                removed_lines: file_removed_lines,
+                range_label: None,
+                change: None,
+            });
+            rows.extend(file_rows);
+        }
+
+        rows
+    }
+
+    fn initial_selected_index(rows: &[ScopeRow]) -> usize {
+        rows.iter()
+            .position(|row| row.row_kind == ScopeRowKind::Entity)
+            .unwrap_or(0)
     }
 
     pub fn set_viewport(&mut self, width: u16, height: u16) {
@@ -208,7 +300,7 @@ impl AppState {
         }
     }
 
-    pub fn rows(&self) -> &[EntityRow] {
+    pub fn rows(&self) -> &[ScopeRow] {
         &self.rows
     }
 
@@ -216,13 +308,21 @@ impl AppState {
         self.rows
             .iter()
             .enumerate()
-            .filter_map(|(row_index, _)| self.row_matches_filter(row_index).then_some(row_index))
+            .filter_map(|(row_index, row)| match row.row_kind {
+                ScopeRowKind::File => self.file_row_has_visible_child(row_index).then_some(row_index),
+                ScopeRowKind::Entity => self.entity_row_matches_filter(row_index).then_some(row_index),
+            })
             .collect()
     }
 
-    pub fn selected_row(&self) -> Option<&EntityRow> {
+    pub fn selected_row(&self) -> Option<&ScopeRow> {
         self.selected_row_index()
             .and_then(|row_index| self.rows.get(row_index))
+    }
+
+    fn selected_entity_row_index(&self) -> Option<usize> {
+        let row_index = self.selected_row_index()?;
+        (self.rows.get(row_index)?.row_kind == ScopeRowKind::Entity).then_some(row_index)
     }
 
     pub fn configure_commit_navigation(
@@ -295,11 +395,18 @@ impl AppState {
     }
 
     pub fn is_row_reviewed(&self, row_index: usize) -> bool {
-        self.row_review_identities
-            .get(row_index)
-            .and_then(|identity| identity.as_ref())
-            .map(|identity| self.reviewed_records.contains_key(identity))
-            .unwrap_or(false)
+        self.row_review_state(row_index) == RowReviewState::Reviewed
+    }
+
+    pub fn row_review_state(&self, row_index: usize) -> RowReviewState {
+        let Some(row) = self.rows.get(row_index) else {
+            return RowReviewState::Unavailable;
+        };
+
+        match row.row_kind {
+            ScopeRowKind::Entity => self.entity_row_review_state(row_index),
+            ScopeRowKind::File => self.file_row_review_state(row_index),
+        }
     }
 
     pub fn apply_review_state(&mut self, state: ReviewStateData) {
@@ -315,7 +422,6 @@ impl AppState {
         self.annotation_filter = annotation_filter;
         self.reviewed_records = records;
         self.annotations = annotations;
-        self.realign_selection_after_visibility_change(prior_selected);
 
         if let Some(annotation_filter) = ui_prefs.annotation_filter {
             self.annotation_filter = annotation_filter;
@@ -326,6 +432,10 @@ impl AppState {
         if let Some(context_mode) = ui_prefs.entity_context_mode {
             self.entity_context_mode = from_persisted_entity_context_mode(context_mode);
         }
+        if let Some(navigation_mode) = ui_prefs.navigation_mode {
+            self.navigation_mode = from_persisted_navigation_mode(navigation_mode);
+        }
+        self.realign_selection_after_visibility_change(prior_selected);
         if let Some(view_mode) = ui_prefs.view_mode {
             self.apply_persisted_view_mode(from_persisted_view_mode(view_mode));
         }
@@ -361,6 +471,7 @@ impl AppState {
                 entity_context_mode: Some(to_persisted_entity_context_mode(
                     self.entity_context_mode,
                 )),
+                navigation_mode: Some(to_persisted_navigation_mode(self.navigation_mode)),
             },
             annotations: self.annotations.clone(),
             records: self.reviewed_records.clone(),
@@ -369,25 +480,19 @@ impl AppState {
 
     pub fn toggle_selected_reviewed(&mut self) -> bool {
         let prior_selected = self.selected;
-        let Some(identity) = self
-            .selected_row_index()
-            .and_then(|row_index| self.row_review_identities.get(row_index))
-            .and_then(|identity| identity.as_ref())
-            .cloned()
-        else {
-            self.review_status_message =
-                Some("Review state unavailable for current comparator endpoint".to_string());
+        let Some(row_index) = self.selected_row_index() else {
             return false;
         };
-
-        if self.reviewed_records.contains_key(&identity) {
-            self.reviewed_records.remove(&identity);
-        } else {
-            self.reviewed_records.insert(identity, current_updated_at());
+        let toggled = match self.rows.get(row_index).map(|row| row.row_kind) {
+            Some(ScopeRowKind::Entity) => self.toggle_entity_row_reviewed(row_index),
+            Some(ScopeRowKind::File) => self.toggle_file_row_reviewed(row_index),
+            None => false,
+        };
+        if !toggled {
+            return false;
         }
 
         self.review_state_dirty = true;
-        self.review_status_message = None;
         self.realign_selection_after_visibility_change(prior_selected);
         if self.mode == Mode::Detail {
             self.refresh_detail();
@@ -408,6 +513,16 @@ impl AppState {
     pub fn cycle_annotation_filter(&mut self) {
         let prior_selected = self.selected;
         self.annotation_filter = self.annotation_filter.cycle();
+        self.review_state_dirty = true;
+        self.realign_selection_after_visibility_change(prior_selected);
+        if self.mode == Mode::Detail {
+            self.refresh_detail();
+        }
+    }
+
+    pub fn toggle_navigation_mode(&mut self) {
+        let prior_selected = self.selected;
+        self.navigation_mode = self.navigation_mode.toggled();
         self.review_state_dirty = true;
         self.realign_selection_after_visibility_change(prior_selected);
         if self.mode == Mode::Detail {
@@ -449,7 +564,7 @@ impl AppState {
         let Some(row) = self.rows.get(row_index) else {
             return true;
         };
-        let current_hash = build_target_content_hash(&row.change);
+        let current_hash = row.change.as_ref().and_then(build_target_content_hash);
         match (
             annotation.content_hash_at_creation.as_deref(),
             current_hash.as_deref(),
@@ -486,16 +601,14 @@ impl AppState {
     }
 
     fn selected_row_annotation_key(&self) -> Option<String> {
-        let row_index = self.selected_row_index()?;
+        let row_index = self.selected_entity_row_index()?;
         self.row_annotation_keys
             .get(row_index)
             .and_then(|key| key.clone())
     }
 
     fn begin_annotation_input(&mut self) {
-        let Some(row_index) = self.selected_row_index() else {
-            self.review_status_message =
-                Some("Annotation unavailable for current entity".to_string());
+        let Some(row_index) = self.selected_entity_row_index() else {
             return;
         };
         let Some(logical_entity_key) = self
@@ -503,8 +616,6 @@ impl AppState {
             .get(row_index)
             .and_then(|key| key.clone())
         else {
-            self.review_status_message =
-                Some("Annotation unavailable for current entity".to_string());
             return;
         };
 
@@ -516,7 +627,8 @@ impl AppState {
         let target_content_hash = self
             .rows
             .get(row_index)
-            .and_then(|row| build_target_content_hash(&row.change));
+            .and_then(|row| row.change.as_ref())
+            .and_then(build_target_content_hash);
         self.annotation_input = Some(AnnotationInputState {
             cursor_position: existing_text.len(),
             text: existing_text,
@@ -727,10 +839,12 @@ impl AppState {
         self.step_mode = snapshot.mode;
         self.cumulative_base_endpoint_id = snapshot.base_endpoint_id;
         self.comparison = Some(snapshot.comparison);
+        self.file_snapshots = snapshot.file_snapshots;
         self.rows = Self::rows_from_diff_result(&snapshot.result);
         self.recompute_review_identities();
         self.recompute_annotation_keys();
-        self.selected = 0;
+        self.selected = Self::initial_selected_index(&self.rows);
+        self.realign_selection_after_visibility_change(self.selected);
         self.detail_scroll = 0;
         self.detail_hunk_index = 0;
         if self.mode == Mode::Detail {
@@ -774,6 +888,10 @@ impl AppState {
         self.entity_context_mode
     }
 
+    pub fn navigation_mode(&self) -> RowNavigationMode {
+        self.navigation_mode
+    }
+
     pub fn fallback_active(&self) -> bool {
         self.requested_view == DiffView::SideBySide && self.effective_view() == DiffView::Unified
     }
@@ -799,20 +917,12 @@ impl AppState {
             return;
         }
 
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
-        }
-
-        let max_index = visible_len.saturating_sub(1);
-        self.selected = self.selected.min(max_index);
-
         if scroll_down {
-            if self.selected < max_index {
-                self.selected += 1;
+            if let Some(position) = self.next_navigable_visible_position(false) {
+                self.selected = position;
             }
-        } else if self.selected > 0 {
-            self.selected -= 1;
+        } else if let Some(position) = self.previous_navigable_visible_position(false) {
+            self.selected = position;
         }
     }
 
@@ -872,9 +982,34 @@ impl AppState {
             return "Detail".to_string();
         };
 
-        match &row.range_label {
-            Some(range) => format!("{} {} {}", row.file_path, row.entity_name, range),
-            None => format!("{} {}", row.file_path, row.entity_name),
+        match row.row_kind {
+            ScopeRowKind::File => format!("file {}", row.file_path),
+            ScopeRowKind::Entity => match &row.range_label {
+                Some(range) => format!("entity {} {} {}", row.file_path, row.entity_name, range),
+                None => format!("entity {} {}", row.file_path, row.entity_name),
+            },
+        }
+    }
+
+    pub fn render_selected_scope(&self) -> Option<RenderedDiff> {
+        self.selected_row().map(|row| self.render_scope_row(row))
+    }
+
+    fn render_scope_row(&self, row: &ScopeRow) -> RenderedDiff {
+        match row.row_kind {
+            ScopeRowKind::File => {
+                let snapshot = self.file_snapshots.get(&row.file_path);
+                render_file_snapshot(
+                    snapshot.and_then(|snapshot| snapshot.before_content.as_deref()),
+                    snapshot.and_then(|snapshot| snapshot.after_content.as_deref()),
+                    self.entity_context_mode,
+                )
+            }
+            ScopeRowKind::Entity => row
+                .change
+                .as_ref()
+                .map(|change| render_change(change, self.entity_context_mode))
+                .unwrap_or_else(RenderedDiff::unavailable),
         }
     }
 
@@ -949,18 +1084,16 @@ impl AppState {
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
             KeyCode::Char('e') => self.toggle_entity_context_mode(),
+            KeyCode::Char('f') => self.toggle_navigation_mode(),
             KeyCode::Char(' ') => {
                 let _ = self.toggle_selected_reviewed();
             }
             KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
-            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('g') => self.select_first_navigable(),
             KeyCode::Char('G') => {
-                let visible_len = self.visible_row_indices().len();
-                if visible_len > 0 {
-                    self.selected = visible_len - 1;
-                }
+                self.select_last_navigable();
             }
             KeyCode::Enter => self.open_detail(),
             _ => {}
@@ -980,22 +1113,22 @@ impl AppState {
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
             KeyCode::Char('e') => self.toggle_entity_context_mode(),
+            KeyCode::Char('f') => self.toggle_navigation_mode(),
             KeyCode::Char(' ') => {
                 let _ = self.toggle_selected_reviewed();
             }
             KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Up | KeyCode::Char('k') => self.split_move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.split_move_down(),
+            KeyCode::Left => self.split_previous_scope(),
+            KeyCode::Right => self.split_next_scope(),
             KeyCode::Tab => self.toggle_split_focus(),
             KeyCode::Char('s') => self.toggle_view(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
-            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('g') => self.split_jump_top(),
             KeyCode::Char('G') => {
-                let visible_len = self.visible_row_indices().len();
-                if visible_len > 0 {
-                    self.selected = visible_len - 1;
-                }
+                self.split_jump_bottom();
             }
             KeyCode::Enter => self.open_detail(),
             _ => {}
@@ -1015,13 +1148,14 @@ impl AppState {
             KeyCode::Char(']') => self.queue_commit_action(CommitStepAction::Newer),
             KeyCode::Char('m') => self.toggle_step_mode(),
             KeyCode::Char('e') => self.toggle_entity_context_mode(),
+            KeyCode::Char('f') => self.toggle_navigation_mode(),
             KeyCode::Char(' ') => {
                 let _ = self.toggle_selected_reviewed();
             }
             KeyCode::Char('r') => self.cycle_review_filter(),
             KeyCode::Esc => self.close_detail(),
-            KeyCode::Left => self.previous_entity(),
-            KeyCode::Right => self.next_entity(),
+            KeyCode::Left => self.previous_scope(),
+            KeyCode::Right => self.next_scope(),
             KeyCode::Char('s') => self.toggle_view(),
             KeyCode::Char('n') => self.next_hunk(),
             KeyCode::Char('p') => self.previous_hunk(),
@@ -1105,25 +1239,15 @@ impl AppState {
     }
 
     fn move_up(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
-        }
-
-        if self.selected == 0 {
-            self.selected = visible_len - 1;
-        } else {
-            self.selected -= 1;
+        if let Some(position) = self.previous_navigable_visible_position(true) {
+            self.selected = position;
         }
     }
 
     fn move_down(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
+        if let Some(position) = self.next_navigable_visible_position(true) {
+            self.selected = position;
         }
-
-        self.selected = (self.selected + 1) % visible_len;
     }
 
     fn open_detail(&mut self) {
@@ -1136,33 +1260,23 @@ impl AppState {
         self.review_state_dirty = true;
     }
 
-    fn next_entity(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
+    fn next_scope(&mut self) {
+        if let Some(position) = self.next_navigable_visible_position(true) {
+            self.selected = position;
+            self.refresh_detail();
         }
-
-        self.selected = (self.selected + 1) % visible_len;
-        self.refresh_detail();
     }
 
-    fn previous_entity(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
+    fn previous_scope(&mut self) {
+        if let Some(position) = self.previous_navigable_visible_position(true) {
+            self.selected = position;
+            self.refresh_detail();
         }
-
-        if self.selected == 0 {
-            self.selected = visible_len - 1;
-        } else {
-            self.selected -= 1;
-        }
-        self.refresh_detail();
     }
 
     fn refresh_detail(&mut self) {
         if let Some(row) = self.selected_row() {
-            self.detail = Some(render_change(&row.change, self.entity_context_mode));
+            self.detail = Some(self.render_scope_row(row));
         } else {
             self.detail = None;
         }
@@ -1236,28 +1350,46 @@ impl AppState {
     }
 
     fn split_sidebar_move_up(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
-            return;
-        }
-
-        let max_index = visible_len.saturating_sub(1);
-        self.selected = self.selected.min(max_index);
-        if self.selected > 0 {
-            self.selected -= 1;
+        if let Some(position) = self.previous_navigable_visible_position(false) {
+            self.selected = position;
         }
     }
 
     fn split_sidebar_move_down(&mut self) {
-        let visible_len = self.visible_row_indices().len();
-        if visible_len == 0 {
+        if let Some(position) = self.next_navigable_visible_position(false) {
+            self.selected = position;
+        }
+    }
+
+    fn split_jump_top(&mut self) {
+        if self.split_preview_available() && self.split_focus == SplitFocus::Preview {
+            self.sync_active_selection_detail();
+            self.detail_scroll = 0;
             return;
         }
 
-        let max_index = visible_len.saturating_sub(1);
-        self.selected = self.selected.min(max_index);
-        if self.selected < max_index {
-            self.selected += 1;
+        self.select_first_navigable();
+    }
+
+    fn split_jump_bottom(&mut self) {
+        if self.split_preview_available() && self.split_focus == SplitFocus::Preview {
+            self.sync_active_selection_detail();
+            self.detail_scroll = self.max_scroll();
+            return;
+        }
+
+        self.select_last_navigable();
+    }
+
+    fn split_previous_scope(&mut self) {
+        if self.split_preview_available() && self.split_focus == SplitFocus::Preview {
+            self.previous_scope();
+        }
+    }
+
+    fn split_next_scope(&mut self) {
+        if self.split_preview_available() && self.split_focus == SplitFocus::Preview {
+            self.next_scope();
         }
     }
 
@@ -1268,7 +1400,7 @@ impl AppState {
         if self.mode == Mode::Detail {
             let prior_hunk_index = self.detail_hunk_index;
             if let Some(row) = self.selected_row() {
-                self.detail = Some(render_change(&row.change, self.entity_context_mode));
+                self.detail = Some(self.render_scope_row(row));
             } else {
                 self.detail = None;
             }
@@ -1318,7 +1450,7 @@ impl AppState {
 
     fn sync_active_selection_detail(&mut self) {
         if let Some(row) = self.selected_row() {
-            self.detail = Some(render_change(&row.change, self.entity_context_mode));
+            self.detail = Some(self.render_scope_row(row));
         } else {
             self.detail = None;
         }
@@ -1373,7 +1505,7 @@ impl AppState {
         visible.get(self.selected).copied()
     }
 
-    fn row_matches_filter(&self, row_index: usize) -> bool {
+    fn entity_row_matches_filter(&self, row_index: usize) -> bool {
         let review_matches = match self.review_filter {
             ReviewFilter::All => true,
             ReviewFilter::Unreviewed => !self.is_row_reviewed(row_index),
@@ -1387,6 +1519,156 @@ impl AppState {
         review_matches && annotation_matches
     }
 
+    fn entity_row_review_state(&self, row_index: usize) -> RowReviewState {
+        self.row_review_identities
+            .get(row_index)
+            .and_then(|identity| identity.as_ref())
+            .map(|identity| {
+                if self.reviewed_records.contains_key(identity) {
+                    RowReviewState::Reviewed
+                } else {
+                    RowReviewState::Unreviewed
+                }
+            })
+            .unwrap_or(RowReviewState::Unavailable)
+    }
+
+    fn file_row_review_state(&self, row_index: usize) -> RowReviewState {
+        let mut any_reviewable = false;
+        let mut any_reviewed = false;
+        let mut all_reviewed = true;
+
+        for child_index in self.file_child_entity_indices(row_index) {
+            let child_state = self.entity_row_review_state(child_index);
+            if child_state == RowReviewState::Unavailable {
+                continue;
+            }
+            any_reviewable = true;
+            let reviewed = child_state == RowReviewState::Reviewed;
+            any_reviewed |= reviewed;
+            all_reviewed &= reviewed;
+        }
+
+        if !any_reviewable {
+            RowReviewState::Unavailable
+        } else if all_reviewed {
+            RowReviewState::Reviewed
+        } else if !any_reviewed {
+            RowReviewState::Unreviewed
+        } else {
+            RowReviewState::Mixed
+        }
+    }
+
+    fn file_row_has_visible_child(&self, row_index: usize) -> bool {
+        let Some(row) = self.rows.get(row_index) else {
+            return false;
+        };
+        if row.row_kind != ScopeRowKind::File {
+            return false;
+        }
+
+        self.rows
+            .iter()
+            .enumerate()
+            .skip(row_index + 1)
+            .take_while(|(_, child)| child.row_kind != ScopeRowKind::File)
+            .any(|(child_index, _)| self.entity_row_matches_filter(child_index))
+    }
+
+    fn file_child_entity_indices(&self, row_index: usize) -> Vec<usize> {
+        let Some(row) = self.rows.get(row_index) else {
+            return Vec::new();
+        };
+        if row.row_kind != ScopeRowKind::File {
+            return Vec::new();
+        }
+
+        self.rows
+            .iter()
+            .enumerate()
+            .skip(row_index + 1)
+            .take_while(|(_, child)| child.row_kind != ScopeRowKind::File)
+            .filter_map(|(child_index, child)| {
+                (child.row_kind == ScopeRowKind::Entity).then_some(child_index)
+            })
+            .collect()
+    }
+
+    fn reviewable_file_child_identities(&self, row_index: usize) -> Vec<ReviewIdentity> {
+        self.file_child_entity_indices(row_index)
+            .into_iter()
+            .filter_map(|child_index| {
+                self.row_review_identities
+                    .get(child_index)
+                    .and_then(|identity| identity.as_ref())
+                    .cloned()
+            })
+            .collect()
+    }
+
+    fn row_index_matches_navigation_mode(&self, row_index: usize) -> bool {
+        match self.navigation_mode {
+            RowNavigationMode::Mixed => true,
+            RowNavigationMode::Entity => {
+                self.rows.get(row_index).map(|row| row.row_kind) == Some(ScopeRowKind::Entity)
+            }
+            RowNavigationMode::File => {
+                self.rows.get(row_index).map(|row| row.row_kind) == Some(ScopeRowKind::File)
+            }
+        }
+    }
+
+    fn navigable_visible_positions(&self) -> Vec<usize> {
+        self.visible_row_indices()
+            .iter()
+            .enumerate()
+            .filter_map(|(visible_position, row_index)| {
+                self.row_index_matches_navigation_mode(*row_index)
+                    .then_some(visible_position)
+            })
+            .collect()
+    }
+
+    fn next_navigable_visible_position(&self, wrap: bool) -> Option<usize> {
+        let navigable = self.navigable_visible_positions();
+        if navigable.is_empty() {
+            return None;
+        }
+
+        navigable
+            .iter()
+            .copied()
+            .find(|position| *position > self.selected)
+            .or_else(|| wrap.then(|| navigable[0]))
+    }
+
+    fn previous_navigable_visible_position(&self, wrap: bool) -> Option<usize> {
+        let navigable = self.navigable_visible_positions();
+        if navigable.is_empty() {
+            return None;
+        }
+
+        navigable
+            .iter()
+            .rev()
+            .copied()
+            .find(|position| *position < self.selected)
+            .or_else(|| wrap.then(|| *navigable.last().expect("navigable checked non-empty")))
+    }
+
+    fn select_first_navigable(&mut self) {
+        if let Some(position) = self.navigable_visible_positions().into_iter().next() {
+            self.selected = position;
+        }
+    }
+
+    fn select_last_navigable(&mut self) {
+        if let Some(position) = self.navigable_visible_positions().into_iter().last() {
+            self.selected = position;
+        }
+    }
+
     fn realign_selection_after_visibility_change(&mut self, prior_selected: usize) {
         let visible_len = self.visible_row_indices().len();
         if visible_len == 0 {
@@ -1394,11 +1676,64 @@ impl AppState {
             return;
         }
 
-        self.selected = if prior_selected >= visible_len {
+        let target = if prior_selected >= visible_len {
             0
         } else {
             prior_selected
         };
+        let navigable = self.navigable_visible_positions();
+        self.selected = navigable
+            .iter()
+            .copied()
+            .find(|position| *position >= target)
+            .or_else(|| navigable.first().copied())
+            .unwrap_or(target);
+    }
+
+    fn toggle_entity_row_reviewed(&mut self, row_index: usize) -> bool {
+        let Some(identity) = self
+            .row_review_identities
+            .get(row_index)
+            .and_then(|identity| identity.as_ref())
+            .cloned()
+        else {
+            self.review_status_message =
+                Some("Review state unavailable for current comparator endpoint".to_string());
+            return false;
+        };
+
+        self.review_status_message = None;
+
+        if self.reviewed_records.contains_key(&identity) {
+            self.reviewed_records.remove(&identity);
+        } else {
+            self.reviewed_records.insert(identity, current_updated_at());
+        }
+
+        true
+    }
+
+    fn toggle_file_row_reviewed(&mut self, row_index: usize) -> bool {
+        let identities = self.reviewable_file_child_identities(row_index);
+        if identities.is_empty() {
+            self.review_status_message =
+                Some("Review state unavailable for current comparator endpoint".to_string());
+            return false;
+        }
+
+        self.review_status_message = None;
+        let mark_all_reviewed = self.file_row_review_state(row_index) != RowReviewState::Reviewed;
+        let updated_at = current_updated_at();
+
+        for identity in identities {
+            if mark_all_reviewed {
+                self.reviewed_records.insert(identity, updated_at.clone());
+            } else {
+                self.reviewed_records.remove(&identity);
+            }
+        }
+
+        true
     }
 
     fn default_cumulative_base_endpoint_id(&self) -> Option<String> {
@@ -1466,6 +1801,9 @@ impl AppState {
 
         let mut fallback_ordinals: HashMap<(String, String, String), usize> = HashMap::new();
         for (row_index, row) in self.rows.iter().enumerate() {
+            if row.row_kind != ScopeRowKind::Entity {
+                continue;
+            }
             let group_key = (
                 row.file_path.clone(),
                 row.entity_type.clone(),
@@ -1474,8 +1812,11 @@ impl AppState {
             let ordinal = fallback_ordinals.entry(group_key).or_insert(0);
             *ordinal = ordinal.saturating_add(1);
 
-            let logical_entity_key = build_logical_entity_key(&row.change, *ordinal);
-            let Some(target_content_hash) = build_target_content_hash(&row.change) else {
+            let Some(change) = row.change.as_ref() else {
+                continue;
+            };
+            let logical_entity_key = build_logical_entity_key(change, *ordinal);
+            let Some(target_content_hash) = build_target_content_hash(change) else {
                 continue;
             };
 
@@ -1494,6 +1835,9 @@ impl AppState {
 
         let mut fallback_ordinals: HashMap<(String, String, String), usize> = HashMap::new();
         for (row_index, row) in self.rows.iter().enumerate() {
+            if row.row_kind != ScopeRowKind::Entity {
+                continue;
+            }
             let group_key = (
                 row.file_path.clone(),
                 row.entity_type.clone(),
@@ -1501,8 +1845,10 @@ impl AppState {
             );
             let ordinal = fallback_ordinals.entry(group_key).or_insert(0);
             *ordinal = ordinal.saturating_add(1);
-            self.row_annotation_keys[row_index] =
-                Some(build_logical_entity_key(&row.change, *ordinal));
+            let Some(change) = row.change.as_ref() else {
+                continue;
+            };
+            self.row_annotation_keys[row_index] = Some(build_logical_entity_key(change, *ordinal));
         }
 
         self.realign_selection_after_visibility_change(prior_selected);
@@ -1677,6 +2023,27 @@ fn from_persisted_entity_context_mode(mode: PersistedEntityContextMode) -> Entit
     }
 }
 
+fn to_persisted_navigation_mode(mode: RowNavigationMode) -> PersistedNavigationMode {
+    match mode {
+        RowNavigationMode::Mixed => PersistedNavigationMode::Mixed,
+        RowNavigationMode::Entity => PersistedNavigationMode::Entity,
+        RowNavigationMode::File => PersistedNavigationMode::File,
+    }
+}
+
+fn from_persisted_navigation_mode(mode: PersistedNavigationMode) -> RowNavigationMode {
+    match mode {
+        PersistedNavigationMode::Mixed => RowNavigationMode::Mixed,
+        PersistedNavigationMode::Entity => RowNavigationMode::Entity,
+        PersistedNavigationMode::File => RowNavigationMode::File,
+    }
+}
+
+fn file_snapshots_from_diff_result(result: &DiffResult) -> HashMap<String, TuiFileSnapshot> {
+    let _ = result;
+    HashMap::new()
+}
+
 fn range_label(change: &SemanticChange) -> Option<String> {
     match (
         change.before_start_line,
@@ -1818,7 +2185,68 @@ mod tests {
             renamed_count: 0,
         };
 
-        AppState::from_diff_result(&result, DiffView::Unified)
+        AppState::from_diff_result_with_snapshots(
+            &result,
+            file_snapshots_for_changes(&result.changes),
+            DiffView::Unified,
+        )
+    }
+
+    fn file_snapshots_for_changes(changes: &[SemanticChange]) -> HashMap<String, TuiFileSnapshot> {
+        changes
+            .iter()
+            .map(|change| {
+                (
+                    change.file_path.clone(),
+                    TuiFileSnapshot {
+                        before_content: change.before_content.clone(),
+                        after_content: change.after_content.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn multi_entity_file_app() -> AppState {
+        let result = DiffResult {
+            changes: vec![
+                change("src/file.rs", "alpha", "one\nold\n", "one\nnew\n"),
+                change("src/file.rs", "beta", "tail\n", "tail\nextra\n"),
+            ],
+            file_count: 1,
+            added_count: 1,
+            modified_count: 1,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        };
+
+        AppState::from_diff_result_with_snapshots(
+            &result,
+            HashMap::from([(
+                "src/file.rs".to_string(),
+                TuiFileSnapshot {
+                    before_content: Some(BASELINE_BEFORE.to_string()),
+                    after_content: Some(BASELINE_AFTER.to_string()),
+                },
+            )]),
+            DiffView::Unified,
+        )
+    }
+
+    fn entity_row_indices(app: &AppState) -> Vec<usize> {
+        app.rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| (row.row_kind == ScopeRowKind::Entity).then_some(index))
+            .collect()
+    }
+
+    fn first_entity_row_index(app: &AppState) -> usize {
+        entity_row_indices(app)
+            .into_iter()
+            .next()
+            .expect("expected at least one entity row")
     }
 
     fn navigation_fixture() -> (Vec<StepEndpoint>, HashMap<String, usize>, CommitCursor) {
@@ -1874,39 +2302,79 @@ mod tests {
     fn app_state_sorts_rows_by_file_path() {
         let app = app();
         assert_eq!(app.rows()[0].file_path, "a.ts");
-        assert_eq!(app.rows()[1].file_path, "b.ts");
+        assert_eq!(app.rows()[2].file_path, "b.ts");
     }
 
     #[test]
     fn app_state_moves_selection_with_j_k() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), 2);
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 3);
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
+    }
+
+    #[test]
+    fn f_key_cycles_navigation_mode() {
+        let mut app = app();
+
+        assert_eq!(app.navigation_mode(), RowNavigationMode::Mixed);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::Entity);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::File);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::Mixed);
+    }
+
+    #[test]
+    fn navigation_mode_changes_keyboard_selection_granularity() {
+        let mut app = app();
+        assert_eq!(app.selected(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
         assert_eq!(app.selected(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::Entity);
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 3);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::File);
+        assert_eq!(app.selected(), 0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 0);
     }
 
     #[test]
     fn list_mouse_scroll_moves_selection() {
         let mut app = app();
         assert_eq!(app.mode(), Mode::List);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
 
         app.handle_list_mouse_scroll(true);
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), 2);
         app.handle_list_mouse_scroll(true);
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), 3);
         app.handle_list_mouse_scroll(false);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 2);
     }
 
     #[test]
     fn list_click_selects_visible_entity_and_ignores_out_of_bounds() {
         let mut app = app();
         assert_eq!(app.mode(), Mode::List);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
 
         app.handle_list_click(1);
         assert_eq!(app.mode(), Mode::Detail);
@@ -1934,18 +2402,22 @@ mod tests {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
 
         app.handle_list_mouse_scroll(true);
         app.handle_list_click(1);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
     }
 
     #[test]
     fn rows_include_added_and_removed_counts() {
-        let app = app();
+        let app = multi_entity_file_app();
+        assert_eq!(app.rows()[1].added_lines, 1);
+        assert_eq!(app.rows()[1].removed_lines, 1);
+        assert_eq!(app.rows()[2].added_lines, 1);
+        assert_eq!(app.rows()[2].removed_lines, 0);
         assert_eq!(app.rows()[0].added_lines, 2);
-        assert_eq!(app.rows()[0].removed_lines, 2);
+        assert_eq!(app.rows()[0].removed_lines, 1);
     }
 
     #[test]
@@ -2135,10 +2607,10 @@ mod tests {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.detail_title().contains("beta"));
+        assert!(app.detail_title().contains("file b.ts"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
-        assert!(app.detail_title().contains("beta"));
+        assert!(app.detail_title().contains("file b.ts"));
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
     }
 
@@ -2176,6 +2648,53 @@ mod tests {
             Some("content unavailable")
         );
         assert_eq!(app.mode(), Mode::Detail);
+    }
+
+    #[test]
+    fn file_scope_detail_uses_file_snapshots_for_hunk_navigation_and_full_scope_toggle() {
+        let mut app = multi_entity_file_app();
+        app.selected = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode(), Mode::Detail);
+        assert_eq!(app.hunk_positions().len(), 2);
+        let hunk_line_count = app.unified_lines().len();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(app.detail_hunk_index(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert!(app.unified_lines().len() > hunk_line_count);
+    }
+
+    #[test]
+    fn file_scope_without_snapshots_shows_unavailable_placeholder() {
+        let result = DiffResult {
+            changes: vec![change("missing.ts", "missing", "before\n", "after\n")],
+            file_count: 1,
+            added_count: 0,
+            modified_count: 1,
+            deleted_count: 0,
+            moved_count: 0,
+            renamed_count: 0,
+        };
+        let mut app = AppState::from_diff_result_with_snapshots(
+            &result,
+            HashMap::new(),
+            DiffView::Unified,
+        );
+
+        app.selected = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.unified_lines().first().map(|line| line.1.as_str()),
+            Some("content unavailable")
+        );
     }
 
     #[test]
@@ -2316,26 +2835,26 @@ mod tests {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
-        assert_eq!(app.selected(), 0);
-        assert_eq!(app.detail_scroll(), 0);
-
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected(), 0);
-        assert!(app.detail_scroll() > 0);
-
-        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         assert_eq!(app.detail_scroll(), 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.selected(), 1);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
         assert_eq!(app.detail_scroll(), 0);
     }
 
     #[test]
-    fn split_mode_hunk_keys_navigate_preview_and_paging_left_right_stay_noop() {
+    fn split_mode_hunk_keys_navigate_preview_and_paging_keys_preserve_preview_state() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
@@ -2359,8 +2878,6 @@ mod tests {
         for key in [
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         ] {
             app.handle_key(key);
             assert_eq!(app.mode(), Mode::Split);
@@ -2371,17 +2888,58 @@ mod tests {
     }
 
     #[test]
+    fn split_mode_left_right_navigate_scopes_when_preview_is_focused() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+        assert_eq!(app.selected(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 3);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.selected(), 2);
+    }
+
+    #[test]
+    fn split_mode_g_and_g_follow_focused_pane() {
+        let mut app = app();
+        app.set_viewport(200, 12);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.mode(), Mode::Split);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 3);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 3);
+        assert!(app.detail_scroll() > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.selected(), 3);
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
     fn split_mouse_scroll_on_sidebar_moves_selection() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
-        assert_eq!(app.selected(), 0);
-
-        app.handle_split_mouse_scroll(false, true);
         assert_eq!(app.selected(), 1);
 
+        app.handle_split_mouse_scroll(false, true);
+        assert_eq!(app.selected(), 2);
+
         app.handle_split_mouse_scroll(false, false);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
     }
 
     #[test]
@@ -2412,13 +2970,13 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         assert!(app.detail_scroll() > 0);
 
         app.set_viewport(70, 40);
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), 2);
     }
 
     #[test]
@@ -2442,12 +3000,12 @@ mod tests {
     fn split_mouse_scroll_noops_outside_split_mode() {
         let mut app = app();
         assert_eq!(app.mode(), Mode::List);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         assert_eq!(app.detail_scroll(), 0);
 
         app.handle_split_mouse_scroll(false, true);
         app.handle_split_mouse_scroll(true, true);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         assert_eq!(app.detail_scroll(), 0);
     }
 
@@ -2456,18 +3014,18 @@ mod tests {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(app.detail_scroll() > 0);
         let preview_scroll = app.detail_scroll();
 
-        app.handle_split_sidebar_click(1);
-        assert_eq!(app.selected(), 1);
+        app.handle_split_sidebar_click(3);
+        assert_eq!(app.selected(), 3);
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), 3);
         assert_eq!(app.detail_scroll(), preview_scroll);
     }
 
@@ -2476,10 +3034,10 @@ mod tests {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
 
         app.handle_split_sidebar_click(99);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
     }
 
     #[test]
@@ -2526,13 +3084,34 @@ mod tests {
         assert!(app.detail_title().contains("alpha"));
 
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("file b.ts"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.detail_title().contains("beta"));
 
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.detail_title().contains("alpha"));
+        assert!(app.detail_title().contains("file a.ts"));
 
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(app.detail_title().contains("beta"));
+    }
+
+    #[test]
+    fn detail_navigation_respects_file_navigation_mode() {
+        let mut app = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(app.navigation_mode(), RowNavigationMode::File);
+        assert_eq!(app.selected(), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("file b.ts"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("file a.ts"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.detail_title().contains("file b.ts"));
     }
 
     #[test]
@@ -2566,7 +3145,7 @@ mod tests {
     fn apply_loaded_commit_snapshot_resets_selection_and_cursor_state() {
         let mut app = app();
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
-        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected(), app.visible_row_indices().len() - 1);
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
@@ -2587,6 +3166,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Pairwise,
             base_endpoint_id: None,
             comparison: StepComparison {
@@ -2603,8 +3183,8 @@ mod tests {
             retain_previous_snapshot: false,
         });
 
-        assert_eq!(app.selected(), 0);
-        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.rows().len(), 2);
         assert_eq!(
             app.commit_cursor().map(|cursor| cursor.sha.as_str()),
             Some("abc1234")
@@ -2718,6 +3298,7 @@ mod tests {
                     moved_count: 0,
                     renamed_count: 0,
                 },
+                file_snapshots: HashMap::new(),
                 mode: StepMode::Pairwise,
                 base_endpoint_id: None,
                 comparison: StepComparison {
@@ -2875,6 +3456,42 @@ mod tests {
     }
 
     #[test]
+    fn file_row_review_toggle_applies_to_all_child_entities_and_tracks_mixed_state() {
+        let mut app = multi_entity_file_app();
+        let (endpoints, endpoint_index, cursor) = navigation_fixture();
+        app.configure_commit_navigation(
+            TuiSourceMode::Commit,
+            endpoints,
+            endpoint_index,
+            Some(cursor),
+            StepMode::Pairwise,
+            None,
+        );
+
+        app.selected = 1;
+        assert!(app.toggle_selected_reviewed());
+        assert_eq!(app.row_review_state(0), RowReviewState::Mixed);
+        assert_eq!(app.row_review_state(1), RowReviewState::Reviewed);
+        assert_eq!(app.row_review_state(2), RowReviewState::Unreviewed);
+
+        app.selected = 0;
+        assert!(app.toggle_selected_reviewed());
+        assert_eq!(app.row_review_state(0), RowReviewState::Reviewed);
+        assert_eq!(app.row_review_state(1), RowReviewState::Reviewed);
+        assert_eq!(app.row_review_state(2), RowReviewState::Reviewed);
+
+        let snapshot = app
+            .take_review_state_dirty_snapshot()
+            .expect("file toggle should mark review state dirty");
+        assert_eq!(snapshot.records.len(), 2);
+
+        assert!(app.toggle_selected_reviewed());
+        assert_eq!(app.row_review_state(0), RowReviewState::Unreviewed);
+        assert_eq!(app.row_review_state(1), RowReviewState::Unreviewed);
+        assert_eq!(app.row_review_state(2), RowReviewState::Unreviewed);
+    }
+
+    #[test]
     fn review_toggle_noops_when_comparator_hash_source_is_unavailable() {
         let mut app = app();
         assert!(!app.toggle_selected_reviewed());
@@ -2899,13 +3516,14 @@ mod tests {
     #[test]
     fn annotation_add_flow_stores_note_and_marks_persistence_dirty() {
         let mut app = app();
+        let entity_row = first_entity_row_index(&app);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(app.annotation_input_active());
         type_annotation(&mut app, "needs follow-up");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(app.row_annotation_text(entity_row), Some("needs follow-up"));
         let snapshot = app
             .take_review_state_dirty_snapshot()
             .expect("annotation add should mark persistence dirty");
@@ -2923,9 +3541,10 @@ mod tests {
     #[test]
     fn annotation_replace_preserves_created_at() {
         let mut app = app();
+        let entity_row = first_entity_row_index(&app);
         let logical_entity_key = app
             .row_annotation_keys
-            .first()
+            .get(entity_row)
             .and_then(|key| key.clone())
             .expect("row should have annotation key");
         app.annotations.insert(
@@ -2976,21 +3595,22 @@ mod tests {
     #[test]
     fn annotation_delete_modal_supports_escape_navigation_and_enter_confirm() {
         let mut app = app();
+        let entity_row = first_entity_row_index(&app);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         type_annotation(&mut app, "needs follow-up");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(app.row_annotation_text(entity_row), Some("needs follow-up"));
         let _ = app.take_review_state_dirty_snapshot();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
         assert!(app.annotation_delete_modal_active());
-        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(app.row_annotation_text(entity_row), Some("needs follow-up"));
         assert!(app.take_review_state_dirty_snapshot().is_none());
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.annotation_delete_modal_active());
-        assert_eq!(app.row_annotation_text(0), Some("needs follow-up"));
+        assert_eq!(app.row_annotation_text(entity_row), Some("needs follow-up"));
         assert_eq!(app.status_message(), Some("annotation delete cancelled"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
@@ -3019,7 +3639,7 @@ mod tests {
         );
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.annotation_delete_modal_active());
-        assert_eq!(app.row_annotation_text(0), None);
+        assert_eq!(app.row_annotation_text(entity_row), None);
         assert_eq!(app.status_message(), Some("annotation removed"));
         assert!(
             app.take_review_state_dirty_snapshot().is_some(),
@@ -3035,7 +3655,12 @@ mod tests {
             .row_review_identities
             .iter()
             .all(|identity| identity.is_none()));
-        assert!(app.row_annotation_keys.iter().all(|key| key.is_some()));
+        for (row_index, row) in app.rows().iter().enumerate() {
+            match row.row_kind {
+                ScopeRowKind::File => assert!(app.row_annotation_keys[row_index].is_none()),
+                ScopeRowKind::Entity => assert!(app.row_annotation_keys[row_index].is_some()),
+            }
+        }
     }
 
     #[test]
@@ -3101,6 +3726,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Cumulative,
             base_endpoint_id: Some("commit:aaaaaaa".to_string()),
             comparison: StepComparison {
@@ -3135,6 +3761,10 @@ mod tests {
             snapshot.ui_prefs.entity_context_mode,
             Some(PersistedEntityContextMode::Entity)
         );
+        assert_eq!(
+            snapshot.ui_prefs.navigation_mode,
+            Some(PersistedNavigationMode::Mixed)
+        );
     }
 
     #[test]
@@ -3150,6 +3780,7 @@ mod tests {
                 view_mode: Some(PersistedViewMode::Detail),
                 diff_view: Some(PersistedDiffView::SideBySide),
                 entity_context_mode: Some(PersistedEntityContextMode::Entity),
+                navigation_mode: Some(PersistedNavigationMode::File),
             },
             annotations: HashMap::new(),
             records: HashMap::new(),
@@ -3158,6 +3789,7 @@ mod tests {
         assert_eq!(app.mode(), Mode::Detail);
         assert_eq!(app.effective_view(), DiffView::SideBySide);
         assert_eq!(app.entity_context_mode(), EntityContextMode::Entity);
+        assert_eq!(app.navigation_mode(), RowNavigationMode::File);
         assert!(!app.unified_lines().is_empty());
     }
 
@@ -3177,7 +3809,7 @@ mod tests {
         assert!(app.toggle_selected_reviewed());
         app.cycle_review_filter();
         assert_eq!(app.review_filter(), ReviewFilter::Unreviewed);
-        assert_eq!(app.visible_row_indices().len(), 1);
+        assert_eq!(app.visible_row_indices().len(), 2);
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
             Some("beta")
@@ -3186,7 +3818,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
-            Some("beta")
+            Some("b.ts")
         );
     }
 
@@ -3209,7 +3841,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
-            Some("beta")
+            Some("b.ts")
         );
 
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
@@ -3218,7 +3850,7 @@ mod tests {
         assert_eq!(app.mode(), Mode::Split);
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
-            Some("alpha")
+            Some("a.ts")
         );
     }
 
@@ -3239,7 +3871,7 @@ mod tests {
         app.cycle_review_filter();
         app.cycle_review_filter();
         assert_eq!(app.review_filter(), ReviewFilter::Reviewed);
-        assert_eq!(app.visible_row_indices().len(), 1);
+        assert_eq!(app.visible_row_indices().len(), 2);
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
             Some("alpha")
@@ -3274,12 +3906,12 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.detail_title().contains("alpha"));
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.detail_title().contains("alpha"));
+        assert!(app.detail_title().contains("file a.ts"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert_eq!(app.review_filter(), ReviewFilter::All);
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.detail_title().contains("beta"));
+        assert!(app.detail_title().contains("alpha"));
     }
 
     #[test]
@@ -3343,7 +3975,8 @@ mod tests {
         );
 
         assert!(app.toggle_selected_reviewed());
-        assert!(app.is_row_reviewed(0));
+        let reviewed_row = first_entity_row_index(&app);
+        assert!(app.is_row_reviewed(reviewed_row));
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
@@ -3369,6 +4002,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Cumulative,
             base_endpoint_id: Some("commit:aaaaaaa".to_string()),
             comparison: StepComparison {
@@ -3379,8 +4013,8 @@ mod tests {
 
         app.apply_commit_step_response(loaded_response(snapshot));
         assert_eq!(app.step_mode(), StepMode::Cumulative);
-        assert_eq!(app.rows().len(), 1);
-        assert!(app.is_row_reviewed(0));
+        assert_eq!(app.rows().len(), 2);
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
     }
 
     #[test]
@@ -3397,7 +4031,7 @@ mod tests {
         );
 
         assert!(app.toggle_selected_reviewed());
-        assert!(app.is_row_reviewed(0));
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
@@ -3423,6 +4057,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Cumulative,
             base_endpoint_id: Some("commit:aaaaaaa".to_string()),
             comparison: StepComparison {
@@ -3432,8 +4067,8 @@ mod tests {
         };
 
         app.apply_commit_step_response(loaded_response(snapshot));
-        assert_eq!(app.rows().len(), 1);
-        assert!(!app.is_row_reviewed(0));
+        assert_eq!(app.rows().len(), 2);
+        assert!(!app.is_row_reviewed(first_entity_row_index(&app)));
     }
 
     #[test]
@@ -3468,7 +4103,7 @@ mod tests {
         );
 
         assert!(app.toggle_selected_reviewed());
-        assert!(app.is_row_reviewed(0));
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
@@ -3496,6 +4131,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Cumulative,
             base_endpoint_id: Some("commit:aaaaaaa".to_string()),
             comparison: StepComparison {
@@ -3505,7 +4141,7 @@ mod tests {
         };
 
         app.apply_commit_step_response(loaded_response(snapshot));
-        assert!(app.is_row_reviewed(0));
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
     }
 
     #[test]
@@ -3540,7 +4176,7 @@ mod tests {
         );
 
         assert!(app.toggle_selected_reviewed());
-        assert!(app.is_row_reviewed(0));
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
 
         let snapshot = CommitSnapshot {
             cursor: CommitCursor {
@@ -3568,6 +4204,7 @@ mod tests {
                 moved_count: 0,
                 renamed_count: 0,
             },
+            file_snapshots: HashMap::new(),
             mode: StepMode::Cumulative,
             base_endpoint_id: Some("commit:aaaaaaa".to_string()),
             comparison: StepComparison {
@@ -3577,7 +4214,7 @@ mod tests {
         };
 
         app.apply_commit_step_response(loaded_response(snapshot));
-        assert!(app.is_row_reviewed(0));
+        assert!(app.is_row_reviewed(first_entity_row_index(&app)));
     }
 
     #[test]
@@ -3622,7 +4259,8 @@ mod tests {
         );
 
         assert!(app.toggle_selected_reviewed());
-        assert!(app.is_row_reviewed(0));
-        assert!(!app.is_row_reviewed(1));
+        let entity_rows = entity_row_indices(&app);
+        assert!(app.is_row_reviewed(entity_rows[0]));
+        assert!(!app.is_row_reviewed(entity_rows[1]));
     }
 }

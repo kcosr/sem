@@ -25,7 +25,7 @@ Current TUI selection model is entity-only. File headers are visual grouping lab
 ## 4. Non-Goals
 1. No parent/container hierarchy in this topic (no class-level selection yet).
 2. No new CLI flags.
-3. No persistence format changes for review/filter/view state.
+3. No new standalone persistence file; navigation mode is stored in the existing TUI review-state UI prefs.
 4. No semantic diff algorithm changes.
 
 ## 5. Current Baseline
@@ -55,10 +55,19 @@ Current TUI selection model is entity-only. File headers are visual grouping lab
 10. Detail title shows selected scope type (`file` or `entity`).
 11. File-scope rendering needs full file before/after content. Source of truth is `FileChange` from input collection; TUI receives a derived file snapshot map built from those `FileChange` records.
 12. Selection behavior under filtering:
-   - file row is shown only when at least one child entity row is visible under current filter,
+   - file row is shown only when at least one child entity row is visible under current review + annotation filters,
    - if selected row becomes hidden, selection advances to next visible row (wrapping) using existing deterministic selection policy.
 13. Detail refresh remains explicit-entry from list (`Enter`) and continuous while already in detail as selection changes from in-detail navigation.
-14. File rows are non-reviewable in v1; review toggles remain entity-scoped.
+14. Navigation mode is tri-state and persisted in UI prefs:
+   - `mixed` => keyboard navigation uses all visible scope rows
+   - `entity` => keyboard navigation skips file rows
+   - `file` => keyboard navigation skips entity rows
+15. `Up/Down` in list/split and `Left/Right` in detail all use the active navigation mode.
+16. File rows are reviewable as aggregate actions:
+   - file row state is derived from child entity review state (`reviewed`, `unreviewed`, `mixed`)
+   - toggling a file row clears all child review records when all are reviewed
+   - otherwise toggling a file row marks all reviewable child entities reviewed
+17. File rows are non-annotatable in v1; `a` and `D` are no-ops when a file row is selected.
 
 ## 7. Contract / Interface Semantics
 This topic defines TUI runtime behavior only.
@@ -68,6 +77,13 @@ This topic defines TUI runtime behavior only.
 2. File rows preserve existing file-group ordering.
 3. Entity rows remain under their file row.
 4. Review/filter behavior applies consistently across row kinds with deterministic visibility/selection fallback.
+5. Review state is mixed-scope:
+   - entity rows own persisted review identities,
+   - file rows derive review state from child entities and never persist separate file-level review records.
+6. Annotation visibility is entity-scoped:
+   - file rows do not own annotation keys,
+   - file row visibility under `A` is derived from child entity visibility,
+   - file rows render annotation state only indirectly through surviving child rows.
 
 ### 7.2 Detail Contract
 1. Selected entity row:
@@ -76,23 +92,32 @@ This topic defines TUI runtime behavior only.
    - `hunk` mode: grouped hunks for file diff
    - `entity` mode: whole-file diff
 3. `n/p` and scroll semantics apply to active scope renderer.
+4. `Left/Right` moves across scope rows allowed by the active navigation mode while remaining in detail mode.
 
 ### 7.3 Footer / Help Contract
 1. Keep existing `e` cell token values.
 2. Help text clarifies scope-aware meaning:
    - `e toggle hunk/full scope`
+3. Help text includes navigation mode toggle:
+   - `f cycle mixed/entity/file nav`
+4. Help text for `a` / `D` remains entity-worded because file rows are non-annotatable.
 
 ## 8. Service / Module Design
 1. `commands/diff.rs`
    - pass file-change content snapshots into TUI startup payload.
+   - include file snapshot maps in step/refresh snapshot payloads so file rows keep working after commit navigation and async reloads.
 2. `tui/app.rs`
    - replace entity-only row model with scope row model.
    - support file row selection and scope-aware detail refresh.
+   - keep annotation identity generation entity-scoped.
+   - derive file-row review state from child entity identities and persist only entity review records.
 3. `tui/detail.rs`
    - add file-scope render path using full file before/after content.
 4. `tui/render.rs`
    - render selectable file rows and nested entity rows.
    - enforce visual distinction and indentation contract.
+   - update footer/help copy from entity-only wording to scope-aware wording where applicable.
+   - render spacing between compact scope icon and label consistently.
 
 ## 9. Error Semantics
 1. Missing file content for selected file row => non-fatal placeholder detail view.
@@ -125,7 +150,9 @@ This topic defines TUI runtime behavior only.
    - file snapshot map reaches TUI from diff command path
 5. Filter/review tests:
    - file row hidden when no visible child rows remain
+   - file row hidden when annotation filter removes all child entity rows
    - selected-row fallback is deterministic when filters hide current row
+   - file row aggregate review toggle correctly handles `mixed` child state
 6. Safety tests:
    - missing file content path is non-fatal
    - added/deleted/binary file paths render deterministic placeholders or one-sided content

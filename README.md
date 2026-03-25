@@ -88,14 +88,16 @@ sem blame src/auth.ts
 
 `sem diff --tui` supports:
 
-- `↑/↓` or `j/k`: move selection in `list`; in `split`, move focused pane (`Tab` toggles sidebar/preview focus); scroll lines in `detail`
-- `Space`: toggle reviewed state on selected/opened entity
+- `↑/↓` or `j/k`: move selection in `list` and the focused pane in `split` using the active navigation mode (`Tab` toggles sidebar/preview focus); scroll lines in `detail`
+- `Space`: toggle reviewed state on selected/opened scope; on file rows this applies to all child entities in the file
 - `r`: cycle review filter (`all` -> `unreviewed` -> `reviewed`)
 - `v`: cycle views (`list` -> `split` -> `detail` -> `list`)
-- `Enter`: open selected entity detail from `list` or `split`
+- `Enter`: open selected scope detail from `list` or `split`
 - `[` / `]`: step older/newer endpoint snapshot
 - `m`: toggle `pairwise` / `cumulative` step mode
-- `e`: toggle `hunk` / `entity` detail context mode
+- `e`: toggle `hunk` / `entity` detail context mode for the selected scope
+- `f`: cycle navigation mode (`mixed` -> `entity` -> `file`) for `↑/↓`, `j/k`, and detail `←/→`
+- `←/→`: in `detail`, move to previous/next scope using the active navigation mode
 - `Esc`: close `detail` and return to prior non-detail view
 - `Tab`: toggle split focus between sidebar and preview
 - `s`: toggle unified vs side-by-side in `detail` and split preview

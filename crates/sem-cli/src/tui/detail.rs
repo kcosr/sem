@@ -55,11 +55,16 @@ pub struct RenderedDiff {
 
 impl RenderedDiff {
     pub fn unavailable() -> Self {
+        Self::message("content unavailable")
+    }
+
+    pub fn message(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
-            unified_lines: vec![(LineKind::Unchanged, "content unavailable".to_string())],
+            unified_lines: vec![(LineKind::Unchanged, message.clone())],
             side_by_side_lines: vec![SideBySideLine {
                 left_number: None,
-                left_text: "content unavailable".to_string(),
+                left_text: message,
                 right_number: None,
                 right_text: String::new(),
                 kind: LineKind::Unchanged,
@@ -71,39 +76,67 @@ impl RenderedDiff {
 }
 
 pub fn render_change(change: &SemanticChange, context_mode: EntityContextMode) -> RenderedDiff {
-    let before = change.before_content.as_deref().unwrap_or("");
-    let after = change.after_content.as_deref().unwrap_or("");
+    render_text_diff(
+        change.before_content.as_deref(),
+        change.after_content.as_deref(),
+        context_mode,
+        change.before_start_line.unwrap_or(1),
+        change.after_start_line.unwrap_or(1),
+    )
+}
+
+pub fn render_file_snapshot(
+    before: Option<&str>,
+    after: Option<&str>,
+    context_mode: EntityContextMode,
+) -> RenderedDiff {
+    render_text_diff(before, after, context_mode, 1, 1)
+}
+
+fn render_text_diff(
+    before: Option<&str>,
+    after: Option<&str>,
+    context_mode: EntityContextMode,
+    base_old: usize,
+    base_new: usize,
+) -> RenderedDiff {
+    let before = before.unwrap_or("");
+    let after = after.unwrap_or("");
 
     if before.is_empty() && after.is_empty() {
         return RenderedDiff::unavailable();
     }
 
     match context_mode {
-        EntityContextMode::Hunk => render_grouped_change(change, before, after),
-        EntityContextMode::Entity => render_full_entity_change(change, before, after),
+        EntityContextMode::Hunk => render_grouped_change(before, after, base_old, base_new),
+        EntityContextMode::Entity => render_full_entity_change(before, after, base_old, base_new),
     }
 }
 
-fn render_grouped_change(change: &SemanticChange, before: &str, after: &str) -> RenderedDiff {
+fn render_grouped_change(
+    before: &str,
+    after: &str,
+    base_old: usize,
+    base_new: usize,
+) -> RenderedDiff {
     let diff = TextDiff::from_lines(before, after);
     let groups = diff.grouped_ops(3);
     if groups.is_empty() {
-        return RenderedDiff::unavailable();
+        return RenderedDiff::message("no hunks available");
     }
-
-    let base_old = change.before_start_line.unwrap_or(1);
-    let base_new = change.after_start_line.unwrap_or(1);
 
     render_groups(&diff, groups, base_old, base_new)
 }
 
-fn render_full_entity_change(change: &SemanticChange, before: &str, after: &str) -> RenderedDiff {
+fn render_full_entity_change(
+    before: &str,
+    after: &str,
+    base_old: usize,
+    base_new: usize,
+) -> RenderedDiff {
     let diff = TextDiff::from_lines(before, after);
     let mut unified_lines: Vec<(LineKind, String)> = Vec::new();
     let mut side_by_side_lines: Vec<SideBySideLine> = Vec::new();
-
-    let base_old = change.before_start_line.unwrap_or(1);
-    let base_new = change.after_start_line.unwrap_or(1);
     let old_count: usize = diff.ops().iter().map(|op| op.old_range().len()).sum();
     let new_count: usize = diff.ops().iter().map(|op| op.new_range().len()).sum();
     let header = format!("@@ -{base_old},{old_count} +{base_new},{new_count} @@");

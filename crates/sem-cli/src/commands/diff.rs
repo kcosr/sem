@@ -118,6 +118,7 @@ pub struct StepNavigationContext {
 pub struct StepSnapshot {
     pub cursor: StepCursor,
     pub result: DiffResult,
+    pub file_snapshots: HashMap<String, TuiFileSnapshot>,
     pub mode: StepMode,
     pub base_endpoint_id: Option<String>,
     pub comparison: StepComparison,
@@ -185,6 +186,12 @@ pub struct StepNavigationBootstrap {
     pub base_endpoint_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TuiFileSnapshot {
+    pub before_content: Option<String>,
+    pub after_content: Option<String>,
+}
+
 struct InputPhase {
     file_changes: Vec<FileChange>,
     from_stdin: bool,
@@ -215,7 +222,7 @@ pub fn diff_command(opts: DiffOptions) {
     let compute = compute_diff_result(&file_changes);
 
     let t4 = Instant::now();
-    let output = execute_output_phase(&opts, &compute.result).unwrap_or_else(|message| {
+    let output = execute_output_phase(&opts, &compute.result, &file_changes).unwrap_or_else(|message| {
         eprintln!("\x1b[31mError: {message}\x1b[0m");
         process::exit(1);
     });
@@ -385,10 +392,30 @@ fn compute_diff_result(file_changes: &[FileChange]) -> ComputePhase {
     }
 }
 
-fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Option<String>, String> {
+fn build_tui_file_snapshot_map(file_changes: &[FileChange]) -> HashMap<String, TuiFileSnapshot> {
+    file_changes
+        .iter()
+        .map(|file| {
+            (
+                file.file_path.clone(),
+                TuiFileSnapshot {
+                    before_content: file.before_content.clone(),
+                    after_content: file.after_content.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn execute_output_phase(
+    opts: &DiffOptions,
+    result: &DiffResult,
+    file_changes: &[FileChange],
+) -> Result<Option<String>, String> {
     if opts.tui {
         let mut navigation = build_tui_navigation_bootstrap(opts)?;
         let mut initial_result = result.clone();
+        let mut initial_file_snapshots = build_tui_file_snapshot_map(file_changes);
         if let Some(bootstrap) = navigation.as_mut() {
             let response = process_step_refresh_request(
                 &bootstrap.context,
@@ -403,6 +430,7 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             );
             if let Some(snapshot) = response.snapshot {
                 initial_result = snapshot.result;
+                initial_file_snapshots = snapshot.file_snapshots;
                 bootstrap.cursor = snapshot.cursor;
                 bootstrap.mode = snapshot.mode;
                 bootstrap.base_endpoint_id = snapshot.base_endpoint_id;
@@ -413,7 +441,12 @@ fn execute_output_phase(opts: &DiffOptions, result: &DiffResult) -> Result<Optio
             return Ok(Some(format_terminal(result)));
         }
 
-        tui::run_tui(&initial_result, opts.diff_view, navigation)
+        tui::run_tui(
+            &initial_result,
+            initial_file_snapshots,
+            opts.diff_view,
+            navigation,
+        )
             .map_err(|error| format!("failed to start TUI: {error}"))?;
         return Ok(None);
     }
@@ -967,12 +1000,13 @@ fn load_step_snapshot(
         .ok_or_else(|| format!("target endpoint {target_endpoint_id} missing in active path"))?;
     let (from_endpoint, to_endpoint, effective_base_endpoint_id) =
         resolve_step_comparison(context, target_index, mode, base_endpoint_id)?;
-    let result =
+    let (result, file_snapshots) =
         load_endpoint_diff_result(&context.cwd, from_endpoint, to_endpoint, &context.file_exts)?;
     let cursor = build_step_cursor(git, context, target_endpoint_id)?;
     Ok(StepSnapshot {
         cursor,
         result,
+        file_snapshots,
         mode,
         base_endpoint_id: effective_base_endpoint_id,
         comparison: StepComparison {
@@ -1115,14 +1149,17 @@ fn load_endpoint_diff_result(
     from: &StepEndpoint,
     to: &StepEndpoint,
     file_exts: &[String],
-) -> Result<DiffResult, String> {
+) -> Result<(DiffResult, HashMap<String, TuiFileSnapshot>), String> {
     if from.endpoint_id == to.endpoint_id {
-        return Ok(compute_diff_result(&[]).result);
+        return Ok((compute_diff_result(&[]).result, HashMap::new()));
     }
 
     let file_changes = load_changed_files_between_endpoints(cwd, &from.kind, &to.kind)?;
     let filtered = filter_file_changes(file_changes, file_exts);
-    Ok(compute_diff_result(&filtered).result)
+    Ok((
+        compute_diff_result(&filtered).result,
+        build_tui_file_snapshot_map(&filtered),
+    ))
 }
 
 fn load_changed_files_between_endpoints(
@@ -1504,7 +1541,7 @@ mod tests {
             renamed_count: 0,
         };
 
-        let output = execute_output_phase(&options, &empty_result)
+        let output = execute_output_phase(&options, &empty_result, &[])
             .expect("empty result should be rendered")
             .expect("tui no-change path should return terminal text");
         assert!(output.contains("No semantic changes detected."));
@@ -1859,10 +1896,11 @@ mod tests {
             display_ref: Some("INDEX".to_string()),
             kind: StepEndpointKind::Index,
         };
-        let result = load_endpoint_diff_result("/tmp/not-used", &endpoint, &endpoint, &[])
+        let (result, snapshots) = load_endpoint_diff_result("/tmp/not-used", &endpoint, &endpoint, &[])
             .expect("self comparison should return empty diff result");
         assert_eq!(result.file_count, 0);
         assert_eq!(result.changes.len(), 0);
+        assert!(snapshots.is_empty());
     }
 
     #[test]
@@ -2441,7 +2479,7 @@ mod tests {
             collect_diff_input_with_stdin(&options, None).expect("pseudo range input should load");
         let filtered = filter_file_changes(input.file_changes, &options.file_exts);
         let compute = compute_diff_result(&filtered);
-        let output = execute_output_phase(&options, &compute.result)
+        let output = execute_output_phase(&options, &compute.result, &filtered)
             .expect("json output phase should succeed")
             .expect("json mode should return output");
         let parsed: serde_json::Value =

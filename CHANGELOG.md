@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-03-24
+
+### Added
+- Diff TUI file-scope navigation with selectable file rows alongside entity rows.
+- Full-file diff rendering for file rows using the existing `e` scope toggle.
+
+### Changed
+- TUI row model now treats files as first-class selectable scopes in list, split, and detail modes.
+- File-scope snapshots now flow through startup and commit-step refresh paths so file rows remain renderable during async reloads.
+- TUI navigation mode is now persisted and tri-state: `mixed`, `entity`, and `file`.
+- `Space` on a file row now toggles review state for the whole file’s child entity set, with derived `mixed` state when only some children are reviewed.
+- Annotation behavior remains entity-scoped: file rows are visible only when at least one child entity survives the active review and annotation filters.
+- Detail-mode `Left` and `Right`, plus `Up`/`Down` in list and split, now follow the active navigation mode.
+- Footer/help copy now describes scope-aware navigation and `e` as `hunk/full scope`.
+
+### Testing
+- Added sem-cli coverage for mixed file/entity row rendering, scope navigation, file snapshot plumbing, and file-scope detail rendering.
+
 ## 2026-03-10
 
 ### Added

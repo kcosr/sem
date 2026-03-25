@@ -13,10 +13,12 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::commands::diff::DiffView;
 
-use super::app::{AnnotationDeleteAction, AppState, Mode};
+use super::app::{
+    AnnotationDeleteAction, AppState, Mode, RowReviewState, ScopeRow, ScopeRowKind,
+};
 use super::detail::LineKind;
 
-const ICON_COL_WIDTH: usize = 2;
+const ICON_COL_WIDTH: usize = 3;
 const INTER_COL_SPACES: usize = 3;
 const TYPE_MIN_WIDTH: usize = 8;
 const ENTITY_MIN_WIDTH: usize = 16;
@@ -128,8 +130,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
 
     let columns = format!(
         "  {} {} {} {}",
-        fit_cell("Type", widths.type_col),
-        fit_cell("Entity", widths.entity_col),
+        fit_cell("Kind", widths.type_col),
+        fit_cell("Name", widths.entity_col),
         fit_cell("Change", widths.change_col),
         fit_cell("+/-", widths.delta_col),
     );
@@ -147,7 +149,6 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
 
     let mut items: Vec<ListItem<'_>> = Vec::new();
     let mut selectable_indices: Vec<usize> = Vec::new();
-    let mut current_file: Option<&str> = None;
     let visible_indices = app.visible_row_indices();
 
     if visible_indices.is_empty() {
@@ -160,42 +161,38 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
             let Some(row) = app.rows().get(row_index) else {
                 continue;
             };
-            if current_file != Some(row.file_path.as_str()) {
-                if !items.is_empty() {
-                    items.push(ListItem::new(Line::raw("")));
-                }
-                current_file = Some(row.file_path.as_str());
-                items.push(ListItem::new(Line::styled(
-                    row.file_path.clone(),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )));
+            if row.row_kind == ScopeRowKind::File && !items.is_empty() {
+                items.push(ListItem::new(Line::raw("")));
             }
 
             let entity_index = selectable_indices.len();
             let marker = if entity_index == app.selected() {
                 "▶"
-            } else if app.is_row_reviewed(row_index) {
-                "✓"
             } else {
-                " "
+                match app.row_review_state(row_index) {
+                    RowReviewState::Reviewed => "✓",
+                    RowReviewState::Mixed => "~",
+                    RowReviewState::Unavailable | RowReviewState::Unreviewed => " ",
+                }
             };
-            let (icon, tag, style) =
-                change_visuals(row.change.change_type, row.change.structural_change);
+            let (kind_text, name_text, tag, style, icon, name_style) = scope_row_list_display(row);
 
             let badge = annotation_badge(app, row_index);
             let entity_text_width = widths.entity_col.saturating_sub(4).max(1);
             let spans = vec![
-                Span::styled(format!("{marker}{icon}"), style),
+                Span::styled(format!("{marker}{icon} "), style),
                 Span::styled(
-                    fit_cell(&row.entity_type, widths.type_col),
-                    Style::default().fg(Color::DarkGray),
+                    fit_cell(kind_text, widths.type_col),
+                    if row.row_kind == ScopeRowKind::File {
+                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    fit_cell(&row.entity_name, entity_text_width),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    fit_cell(name_text, entity_text_width),
+                    name_style,
                 ),
                 Span::styled(
                     fit_cell(badge.map(|(label, _)| label).unwrap_or(""), 4),
@@ -219,7 +216,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &AppState) {
     }
 
     let list = List::new(items)
-        .block(Block::default().title("Entities").borders(Borders::ALL))
+        .block(Block::default().title("Files + Entities").borders(Borders::ALL))
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     let mut state = ListState::default();
@@ -591,7 +588,6 @@ fn split_sidebar_selectable_item_indices(app: &AppState, has_narrow_notice: bool
     }
 
     let mut selectable_item_indices = Vec::with_capacity(visible_indices.len());
-    let mut current_file: Option<&str> = None;
     let mut item_index: usize = if has_narrow_notice { 2 } else { 0 };
 
     for row_index in visible_indices {
@@ -599,11 +595,7 @@ fn split_sidebar_selectable_item_indices(app: &AppState, has_narrow_notice: bool
             continue;
         };
 
-        if current_file != Some(row.file_path.as_str()) {
-            if item_index > 0 {
-                item_index = item_index.saturating_add(1);
-            }
-            current_file = Some(row.file_path.as_str());
+        if row.row_kind == ScopeRowKind::File && item_index > 0 {
             item_index = item_index.saturating_add(1);
         }
 
@@ -621,7 +613,6 @@ fn list_selectable_item_indices(app: &AppState) -> Vec<usize> {
     }
 
     let mut selectable_item_indices = Vec::with_capacity(visible_indices.len());
-    let mut current_file: Option<&str> = None;
     let mut item_index: usize = 0;
 
     for row_index in visible_indices {
@@ -629,11 +620,7 @@ fn list_selectable_item_indices(app: &AppState) -> Vec<usize> {
             continue;
         };
 
-        if current_file != Some(row.file_path.as_str()) {
-            if item_index > 0 {
-                item_index = item_index.saturating_add(1);
-            }
-            current_file = Some(row.file_path.as_str());
+        if row.row_kind == ScopeRowKind::File && item_index > 0 {
             item_index = item_index.saturating_add(1);
         }
 
@@ -666,7 +653,6 @@ fn split_left_width(total_width: u16) -> u16 {
 fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice: Option<&str>) {
     let mut items: Vec<ListItem<'_>> = Vec::new();
     let mut selectable_indices: Vec<usize> = Vec::new();
-    let mut current_file: Option<&str> = None;
     let visible_indices = app.visible_row_indices();
     let content_width = usize::from(area.width.saturating_sub(4)).max(1);
     let delta_col = 9usize.min(content_width.saturating_sub(1)).max(1);
@@ -695,29 +681,22 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
             let Some(row) = app.rows().get(row_index) else {
                 continue;
             };
-            if current_file != Some(row.file_path.as_str()) {
-                if !items.is_empty() {
-                    items.push(ListItem::new(Line::raw("")));
-                }
-                current_file = Some(row.file_path.as_str());
-                items.push(ListItem::new(Line::styled(
-                    fit_cell(&row.file_path, content_width),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )));
+            if row.row_kind == ScopeRowKind::File && !items.is_empty() {
+                items.push(ListItem::new(Line::raw("")));
             }
 
             let entity_index = selectable_indices.len();
             let marker = if entity_index == app.selected() {
                 "▶"
-            } else if app.is_row_reviewed(row_index) {
-                "✓"
             } else {
-                " "
+                match app.row_review_state(row_index) {
+                    RowReviewState::Reviewed => "✓",
+                    RowReviewState::Mixed => "~",
+                    RowReviewState::Unavailable | RowReviewState::Unreviewed => " ",
+                }
             };
-            let (change_icon, _, change_style) =
-                change_visuals(row.change.change_type, row.change.structural_change);
+            let (_kind_text, name_text, _, change_style, change_icon, name_style) =
+                scope_row_list_display(row);
 
             let badge = annotation_badge(app, row_index);
             let entity_text_width = entity_col.saturating_sub(4).max(1);
@@ -725,12 +704,16 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
                 Span::styled(format!("{marker}{change_icon}"), change_style),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<2}", entity_type_icon(&row.entity_type)),
-                    Style::default().fg(Color::DarkGray),
+                    format!("{:<2}", compact_scope_icon(row)),
+                    if row.row_kind == ScopeRowKind::File {
+                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
                 ),
                 Span::styled(
-                    fit_cell(&row.entity_name, entity_text_width),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    fit_cell(name_text, entity_text_width),
+                    name_style,
                 ),
                 Span::styled(
                     fit_cell(badge.map(|(label, _)| label).unwrap_or(""), 4),
@@ -748,7 +731,7 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
     let list = List::new(items)
         .block(
             Block::default()
-                .title("Entities (Split)")
+                .title("Files + Entities")
                 .borders(Borders::ALL),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -764,14 +747,16 @@ fn draw_split_sidebar(frame: &mut Frame<'_>, area: Rect, app: &AppState, notice:
 fn draw_split_preview(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let Some(row) = app.selected_row() else {
         frame.render_widget(
-            Paragraph::new("No entity selected")
+            Paragraph::new("No scope selected")
                 .block(Block::default().borders(Borders::ALL).title("Diff")),
             area,
         );
         return;
     };
 
-    let rendered = super::detail::render_change(&row.change, app.entity_context_mode());
+    let Some(rendered) = app.render_selected_scope() else {
+        return;
+    };
     let start = app.detail_scroll();
     let selected_file_path = Some(row.file_path.as_str());
     let annotation = app.selected_row_annotation();
@@ -953,7 +938,7 @@ fn draw_annotation_delete_modal(frame: &mut Frame<'_>, app: &AppState) {
 
 fn empty_filter_message(app: &AppState) -> String {
     format!(
-        "No entities match filters (r: {}, A: {})",
+        "No scopes match filters (r: {}, A: {})",
         app.review_filter().as_token(),
         app.annotation_filter().as_token()
     )
@@ -1001,7 +986,8 @@ fn draw_annotation_input(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn list_footer_parts(app: &AppState) -> FooterParts {
-    let mut controls = "Controls: Space review | a annotate | Enter open | ? help".to_string();
+    let mut controls =
+        "Controls: Space review | f nav | a annotate | Enter open scope | ? help".to_string();
     if app.commit_navigation_enabled() {
         controls.push_str(" | [/] step");
     } else {
@@ -1016,7 +1002,8 @@ fn list_footer_parts(app: &AppState) -> FooterParts {
 }
 
 fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterParts {
-    let mut controls = "Controls: Tab pane | s layout | Enter open | ? help".to_string();
+    let mut controls =
+        "Controls: Tab pane | f nav | s layout | Enter open scope | ? help".to_string();
     if app.commit_navigation_enabled() {
         controls.push_str(" | [/] step");
     } else {
@@ -1034,7 +1021,8 @@ fn split_footer_parts(app: &AppState, narrow_notice: Option<&str>) -> FooterPart
 }
 
 fn detail_footer_parts(app: &AppState) -> FooterParts {
-    let mut controls = "Controls: Esc back | e context | s layout | D delete | ? help".to_string();
+    let mut controls =
+        "Controls: Esc back | e context | f nav | s layout | D delete | ? help".to_string();
     if app.commit_navigation_enabled() {
         controls.push_str(" | [/] step");
     } else {
@@ -1057,6 +1045,7 @@ fn footer_cells(app: &AppState) -> Vec<FooterCell> {
         FooterCell::new('r', app.review_filter().as_token()),
         FooterCell::new('A', app.annotation_filter().as_token()),
         FooterCell::new('e', app.entity_context_mode().as_token()),
+        FooterCell::new('f', app.navigation_mode().as_token()),
         FooterCell::new('v', app.mode_token()),
     ]
 }
@@ -1240,17 +1229,18 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         left[0],
         "List",
         &[
-            ("↑/↓ or j/k", "move selection"),
-            ("Space", "toggle reviewed on focused entity"),
+            ("↑/↓ or j/k", "move selection by nav mode"),
+            ("Space", "toggle reviewed on focused scope"),
             ("a", "add/replace annotation on focused entity"),
             ("D", "open delete annotation confirmation"),
             ("r", "cycle review filter"),
             ("A", "cycle annotation filter"),
             ("[ / ]", "step older/newer endpoint"),
             ("m", "toggle pairwise/cumulative mode"),
-            ("e", "toggle hunk/entity context"),
+            ("e", "toggle hunk/full scope"),
+            ("f", "cycle mixed/entity/file nav"),
             ("-", "stepping is disabled for stdin/two-file mode"),
-            ("Enter", "open detail"),
+            ("Enter", "open selected scope"),
             ("g/G", "jump top/bottom"),
         ],
     );
@@ -1259,21 +1249,22 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         left[1],
         "Split",
         &[
-            ("↑/↓ or j/k", "move focused pane"),
-            ("Space", "toggle reviewed on focused entity"),
+            ("↑/↓ or j/k", "move focused pane by nav mode"),
+            ("Space", "toggle reviewed on focused scope"),
             ("a", "add/replace annotation on focused entity"),
             ("D", "open delete annotation confirmation"),
             ("r", "cycle review filter"),
             ("A", "cycle annotation filter"),
             ("[ / ]", "step older/newer endpoint"),
             ("m", "toggle pairwise/cumulative mode"),
-            ("e", "toggle hunk/entity context"),
+            ("e", "toggle hunk/full scope"),
+            ("f", "cycle mixed/entity/file nav"),
             ("Tab", "toggle split focus sidebar/preview"),
             ("s", "toggle split preview unified/side-by-side"),
             ("n/p", "next/previous hunk in split preview"),
-            ("Enter", "open detail"),
-            ("PgUp/PgDn", "Left/Right no-op in split"),
-            ("g/G", "jump top/bottom"),
+            ("Left/Right", "previous/next scope in preview"),
+            ("Enter", "open selected scope"),
+            ("g/G", "jump top/bottom in focused pane"),
         ],
     );
     draw_help_section(
@@ -1283,14 +1274,15 @@ fn draw_help_overlay(frame: &mut Frame<'_>) {
         &[
             ("[ / ]", "step older/newer endpoint"),
             ("m", "toggle pairwise/cumulative mode"),
-            ("Space", "toggle reviewed on opened entity"),
+            ("Space", "toggle reviewed on opened scope"),
             ("a", "add/replace annotation on opened entity"),
             ("D", "open delete annotation confirmation"),
             ("r", "cycle review filter"),
             ("A", "cycle annotation filter"),
-            ("e", "toggle hunk/entity context"),
+            ("e", "toggle hunk/full scope"),
+            ("f", "cycle mixed/entity/file nav"),
             ("Esc", "back to prior non-detail view"),
-            ("Left/Right", "previous/next entity"),
+            ("Left/Right", "previous/next scope by nav mode"),
             ("s", "toggle unified/side-by-side"),
             ("n/p", "next/previous hunk"),
             ("PgUp/PgDn", "scroll by page"),
@@ -1368,8 +1360,55 @@ fn change_visuals(
     }
 }
 
+fn scope_row_list_display(
+    row: &ScopeRow,
+) -> (
+    &'static str,
+    &str,
+    &'static str,
+    Style,
+    &'static str,
+    Style,
+) {
+    match row.row_kind {
+        ScopeRowKind::File => (
+            "file",
+            row.file_path.as_str(),
+            "[file]",
+            Style::default().fg(Color::LightBlue),
+            "F",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        ScopeRowKind::Entity => {
+            let (icon, tag, style) = row
+                .change
+                .as_ref()
+                .map(|change| change_visuals(change.change_type, change.structural_change))
+                .unwrap_or(("•", "[entity]", Style::default().fg(Color::DarkGray)));
+            (
+                "entity",
+                row.entity_name.as_str(),
+                tag,
+                style,
+                icon,
+                Style::default().add_modifier(Modifier::BOLD),
+            )
+        }
+    }
+}
+
+fn compact_scope_icon(row: &ScopeRow) -> char {
+    match row.row_kind {
+        ScopeRowKind::File => 'F',
+        ScopeRowKind::Entity => entity_type_icon(&row.entity_type),
+    }
+}
+
 fn entity_type_icon(entity_type: &str) -> char {
     match entity_type.to_ascii_lowercase().as_str() {
+        "entity" => '•',
         "function" | "fn" | "method" => 'ƒ',
         "class" => 'C',
         "struct" => 'S',
@@ -2306,7 +2345,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("toggle hunk/entity context"),
+            rendered.contains("toggle hunk/full scope"),
             "expected help overlay toggle line, got:\n{rendered}"
         );
         assert!(
@@ -2329,7 +2368,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("toggle hunk/entity context"),
+            rendered.contains("toggle hunk/full scope"),
             "expected help overlay toggle line in detail mode, got:\n{rendered}"
         );
         assert!(
@@ -2369,8 +2408,8 @@ mod tests {
             "expected split side-by-side key guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("Left/Right no-op in split"),
-            "expected split no-op guidance in help overlay, got:\n{rendered}"
+            rendered.contains("previous/next scope in preview"),
+            "expected split scope-navigation guidance in help overlay, got:\n{rendered}"
         );
         assert!(
             rendered.contains("cycle list/split/detail views"),
@@ -2381,13 +2420,13 @@ mod tests {
     #[test]
     fn help_section_lines_align_keys_to_shared_column_width() {
         let lines = help_section_lines(&[
-            ("e", "toggle hunk/entity context"),
+            ("e", "toggle hunk/full scope"),
             ("Tab", "toggle split focus sidebar/preview"),
         ]);
 
         let rendered: Vec<String> = lines.into_iter().map(|line| line.to_string()).collect();
         assert_eq!(
-            rendered[0], "  e    toggle hunk/entity context",
+            rendered[0], "  e    toggle hunk/full scope",
             "expected short key to be padded to shared width"
         );
         assert_eq!(
@@ -2410,7 +2449,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("Entities (Split)"),
+            rendered.contains("Files + Entities"),
             "expected split sidebar block title, got:\n{rendered}"
         );
         assert!(
@@ -2454,7 +2493,7 @@ mod tests {
             .expect("draw should succeed for second split selection");
         let second = terminal_buffer_text(&terminal);
         assert!(
-            second.contains("src/b.rs y"),
+            second.contains("file src/b.rs"),
             "expected split preview header to follow sidebar selection, got:\n{second}"
         );
     }
@@ -2472,7 +2511,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert_eq!(
             app.selected_row().map(|row| row.entity_name.as_str()),
-            Some("x")
+            Some("src/a.rs")
         );
 
         let backend = TestBackend::new(140, 24);
@@ -2483,7 +2522,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("src/a.rs x"),
+            rendered.contains("file src/a.rs"),
             "expected split preview to follow fallback selected row, got:\n{rendered}"
         );
     }
@@ -2581,7 +2620,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("No entities match filters (r: r"),
+            rendered.contains("No scopes match filters (r: r"),
             "expected split no-match row, got:\n{rendered}"
         );
     }
@@ -2600,7 +2639,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("No entity selected"),
+            rendered.contains("No scope selected"),
             "expected split preview placeholder, got:\n{rendered}"
         );
     }
@@ -2619,7 +2658,7 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("No entities match filters (r: reviewed, A: all)"),
+            rendered.contains("No scopes match filters (r: reviewed, A: all)"),
             "expected no-match row, got:\n{rendered}"
         );
     }
@@ -2641,6 +2680,25 @@ mod tests {
         assert!(
             rendered.contains("✓∆"),
             "expected reviewed marker for non-selected row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn draw_list_mode_renders_space_between_icon_and_kind_label() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with file navigation selected");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            rendered.contains("▶F file"),
+            "expected spaced file icon label, got:\n{rendered}"
         );
     }
 
@@ -3077,8 +3135,8 @@ mod tests {
     #[test]
     fn list_selection_at_maps_click_rows_to_list_entities() {
         let app = AppState::from_diff_result(&sample_result_two_files(), DiffView::Unified);
-        assert_eq!(list_selection_at(120, 24, 10, 5, &app), Some(0));
-        assert_eq!(list_selection_at(120, 24, 10, 8, &app), Some(1));
+        assert_eq!(list_selection_at(120, 24, 10, 5, &app), Some(1));
+        assert_eq!(list_selection_at(120, 24, 10, 8, &app), Some(3));
         assert_eq!(list_selection_at(120, 24, 10, 1, &app), None);
         assert_eq!(list_selection_at(120, 24, 10, 3, &app), None);
     }
@@ -3089,9 +3147,9 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
 
-        assert_eq!(split_sidebar_selection_at(120, 24, 10, 5, &app), Some(0));
-        assert_eq!(split_sidebar_selection_at(120, 24, 10, 8, &app), Some(1));
-        assert_eq!(split_sidebar_selection_at(120, 24, 10, 4, &app), None);
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 5, &app), Some(1));
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 8, &app), Some(3));
+        assert_eq!(split_sidebar_selection_at(120, 24, 10, 4, &app), Some(0));
         assert_eq!(split_sidebar_selection_at(120, 24, 50, 5, &app), None);
     }
 
@@ -3101,7 +3159,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.mode(), Mode::Split);
 
-        assert_eq!(split_sidebar_selection_at(70, 24, 10, 8, &app), Some(0));
+        assert_eq!(split_sidebar_selection_at(70, 24, 10, 8, &app), Some(1));
         assert_eq!(split_sidebar_selection_at(70, 24, 10, 4, &app), None);
     }
 

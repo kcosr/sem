@@ -91,12 +91,21 @@ pub enum PersistedEntityContextMode {
     Entity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersistedNavigationMode {
+    Mixed,
+    Entity,
+    File,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReviewStateUiPrefs {
     pub annotation_filter: Option<AnnotationFilter>,
     pub view_mode: Option<PersistedViewMode>,
     pub diff_view: Option<PersistedDiffView>,
     pub entity_context_mode: Option<PersistedEntityContextMode>,
+    pub navigation_mode: Option<PersistedNavigationMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,6 +174,8 @@ struct PersistedUiPrefs {
     diff_view: Option<PersistedDiffView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     entity_context_mode: Option<PersistedEntityContextMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    navigation_mode: Option<PersistedNavigationMode>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -276,6 +287,7 @@ impl ReviewStateStore {
                     view_mode: prefs.view_mode,
                     diff_view: prefs.diff_view,
                     entity_context_mode: prefs.entity_context_mode,
+                    navigation_mode: prefs.navigation_mode,
                 },
             )
         } else {
@@ -347,6 +359,7 @@ impl ReviewStateStore {
                 view_mode: state.ui_prefs.view_mode,
                 diff_view: state.ui_prefs.diff_view,
                 entity_context_mode: state.ui_prefs.entity_context_mode,
+                navigation_mode: state.ui_prefs.navigation_mode,
             }),
             annotations,
             review_records,
@@ -835,6 +848,7 @@ mod tests {
                 view_mode: Some(PersistedViewMode::Split),
                 diff_view: Some(PersistedDiffView::SideBySide),
                 entity_context_mode: Some(PersistedEntityContextMode::Entity),
+                navigation_mode: Some(PersistedNavigationMode::Mixed),
             },
             annotations: HashMap::new(),
             records: HashMap::new(),
@@ -879,6 +893,7 @@ mod tests {
                 view_mode: Some(PersistedViewMode::Detail),
                 diff_view: Some(PersistedDiffView::Unified),
                 entity_context_mode: Some(PersistedEntityContextMode::Hunk),
+                navigation_mode: Some(PersistedNavigationMode::Mixed),
             },
             annotations: HashMap::from([(
                 "entityId::src/app.rs::function::run".to_string(),
