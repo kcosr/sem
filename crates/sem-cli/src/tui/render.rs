@@ -1215,63 +1215,135 @@ fn format_comparator_context_line(
 fn draw_help_overlay(frame: &mut Frame<'_>) {
     let popup = centered_rect(80, 80, frame.area());
     frame.render_widget(Clear, popup);
+    let outer = Block::default().title("Help").borders(Borders::ALL);
+    let inner = outer.inner(popup);
+    frame.render_widget(outer, popup);
 
-    let help_lines = vec![
-        Line::from("List Mode:"),
-        Line::from("  ↑/↓ or j/k move selection"),
-        Line::from("  Space toggle reviewed on focused entity"),
-        Line::from("  a add/replace annotation on focused entity"),
-        Line::from("  D open delete annotation confirmation"),
-        Line::from("  r cycle review filter (all/unreviewed/reviewed)"),
-        Line::from("  A cycle annotation filter (all/annotated/unannotated)"),
-        Line::from("  [ / ] step older/newer endpoint"),
-        Line::from("  m toggle pairwise/cumulative mode"),
-        Line::from("  e toggle hunk/entity context"),
-        Line::from("  stepping is disabled for stdin/two-file mode"),
-        Line::from("  Enter open detail"),
-        Line::from("  g/G jump top/bottom"),
-        Line::from("Split Mode:"),
-        Line::from("  ↑/↓ or j/k move focused pane"),
-        Line::from("  Space toggle reviewed on focused entity"),
-        Line::from("  a add/replace annotation on focused entity"),
-        Line::from("  D open delete annotation confirmation"),
-        Line::from("  r cycle review filter"),
-        Line::from("  A cycle annotation filter"),
-        Line::from("  [ / ] step older/newer endpoint"),
-        Line::from("  m toggle pairwise/cumulative mode"),
-        Line::from("  e toggle hunk/entity context"),
-        Line::from("  Tab toggle split focus between sidebar/preview"),
-        Line::from("  s toggle split preview unified/side-by-side"),
-        Line::from("  n/p next/previous hunk in split preview"),
-        Line::from("  Enter open detail"),
-        Line::from("  PageUp/PageDown and Left/Right no-op in split"),
-        Line::from("  g/G jump top/bottom"),
-        Line::from("Detail Mode:"),
-        Line::from("  [ / ] step older/newer endpoint"),
-        Line::from("  m toggle pairwise/cumulative mode"),
-        Line::from("  Space toggle reviewed on opened entity"),
-        Line::from("  a add/replace annotation on opened entity"),
-        Line::from("  D open delete annotation confirmation"),
-        Line::from("  r cycle review filter"),
-        Line::from("  A cycle annotation filter"),
-        Line::from("  e toggle hunk/entity context"),
-        Line::from("  Esc back to prior non-detail view"),
-        Line::from("  Left/Right previous/next entity"),
-        Line::from("  s toggle unified/side-by-side"),
-        Line::from("  n/p next/previous hunk"),
-        Line::from("  PageUp/PageDown scroll by page"),
-        Line::from("  g/G jump top/bottom"),
-        Line::from("Global:"),
-        Line::from("  Delete confirmation: Tab or ←/→ choose, Enter confirm, Esc cancel"),
-        Line::from("  v cycle list/split/detail views"),
-        Line::from("  ? toggle help"),
-        Line::from("  q or Ctrl+c quit"),
-    ];
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(columns[0]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .split(columns[1]);
 
-    let paragraph = Paragraph::new(help_lines)
-        .block(Block::default().title("Help").borders(Borders::ALL))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, popup);
+    draw_help_section(
+        frame,
+        left[0],
+        "List",
+        &[
+            ("↑/↓ or j/k", "move selection"),
+            ("Space", "toggle reviewed on focused entity"),
+            ("a", "add/replace annotation on focused entity"),
+            ("D", "open delete annotation confirmation"),
+            ("r", "cycle review filter"),
+            ("A", "cycle annotation filter"),
+            ("[ / ]", "step older/newer endpoint"),
+            ("m", "toggle pairwise/cumulative mode"),
+            ("e", "toggle hunk/entity context"),
+            ("-", "stepping is disabled for stdin/two-file mode"),
+            ("Enter", "open detail"),
+            ("g/G", "jump top/bottom"),
+        ],
+    );
+    draw_help_section(
+        frame,
+        left[1],
+        "Split",
+        &[
+            ("↑/↓ or j/k", "move focused pane"),
+            ("Space", "toggle reviewed on focused entity"),
+            ("a", "add/replace annotation on focused entity"),
+            ("D", "open delete annotation confirmation"),
+            ("r", "cycle review filter"),
+            ("A", "cycle annotation filter"),
+            ("[ / ]", "step older/newer endpoint"),
+            ("m", "toggle pairwise/cumulative mode"),
+            ("e", "toggle hunk/entity context"),
+            ("Tab", "toggle split focus sidebar/preview"),
+            ("s", "toggle split preview unified/side-by-side"),
+            ("n/p", "next/previous hunk in split preview"),
+            ("Enter", "open detail"),
+            ("PgUp/PgDn", "Left/Right no-op in split"),
+            ("g/G", "jump top/bottom"),
+        ],
+    );
+    draw_help_section(
+        frame,
+        right[0],
+        "Detail",
+        &[
+            ("[ / ]", "step older/newer endpoint"),
+            ("m", "toggle pairwise/cumulative mode"),
+            ("Space", "toggle reviewed on opened entity"),
+            ("a", "add/replace annotation on opened entity"),
+            ("D", "open delete annotation confirmation"),
+            ("r", "cycle review filter"),
+            ("A", "cycle annotation filter"),
+            ("e", "toggle hunk/entity context"),
+            ("Esc", "back to prior non-detail view"),
+            ("Left/Right", "previous/next entity"),
+            ("s", "toggle unified/side-by-side"),
+            ("n/p", "next/previous hunk"),
+            ("PgUp/PgDn", "scroll by page"),
+            ("g/G", "jump top/bottom"),
+        ],
+    );
+    draw_help_section(
+        frame,
+        right[1],
+        "Global",
+        &[
+            ("Tab/←/→", "delete confirm choice"),
+            ("Enter/Esc", "delete confirm/cancel"),
+            ("v", "cycle list/split/detail views"),
+            ("?", "toggle help"),
+            ("q/Ctrl+c", "quit"),
+        ],
+    );
+}
+
+fn draw_help_section(frame: &mut Frame<'_>, area: Rect, title: &str, entries: &[(&str, &str)]) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let lines = help_section_lines(entries);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn help_section_lines<'a>(entries: &'a [(&'a str, &'a str)]) -> Vec<Line<'a>> {
+    let key_width = entries
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    entries
+        .iter()
+        .map(|(key, description)| {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{key:key_width$}"),
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::raw(*description),
+            ])
+        })
+        .collect()
 }
 
 fn change_visuals(
@@ -2196,11 +2268,11 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("e toggle hunk/entity context"),
+            rendered.contains("toggle hunk/entity context"),
             "expected help overlay toggle line, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("v cycle list/split/detail views"),
+            rendered.contains("cycle list/split/detail views"),
             "expected help overlay view cycle line, got:\n{rendered}"
         );
     }
@@ -2219,15 +2291,15 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("e toggle hunk/entity context"),
+            rendered.contains("toggle hunk/entity context"),
             "expected help overlay toggle line in detail mode, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("Esc back to prior non-detail view"),
+            rendered.contains("back to prior non-detail view"),
             "expected detail-mode escape guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("s toggle unified/side-by-side"),
+            rendered.contains("toggle unified/side-by-side"),
             "expected detail-mode side-by-side key guidance in help overlay, got:\n{rendered}"
         );
     }
@@ -2247,24 +2319,42 @@ mod tests {
 
         let rendered = terminal_buffer_text(&terminal);
         assert!(
-            rendered.contains("n/p next/previous hunk in split preview"),
+            rendered.contains("next/previous hunk in split"),
             "expected split hunk guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("Tab toggle split focus between sidebar/preview"),
+            rendered.contains("toggle split focus"),
             "expected split focus guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("s toggle split preview unified/side-by-side"),
+            rendered.contains("toggle split preview"),
             "expected split side-by-side key guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("PageUp/PageDown and Left/Right no-op in split"),
+            rendered.contains("Left/Right no-op in split"),
             "expected split no-op guidance in help overlay, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("v cycle list/split/detail views"),
+            rendered.contains("cycle list/split/detail views"),
             "expected global view-cycle guidance in split help overlay, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn help_section_lines_align_keys_to_shared_column_width() {
+        let lines = help_section_lines(&[
+            ("e", "toggle hunk/entity context"),
+            ("Tab", "toggle split focus sidebar/preview"),
+        ]);
+
+        let rendered: Vec<String> = lines.into_iter().map(|line| line.to_string()).collect();
+        assert_eq!(
+            rendered[0], "  e    toggle hunk/entity context",
+            "expected short key to be padded to shared width"
+        );
+        assert_eq!(
+            rendered[1], "  Tab  toggle split focus sidebar/preview",
+            "expected longest key to define alignment column"
         );
     }
 
