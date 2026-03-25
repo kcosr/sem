@@ -38,6 +38,7 @@ const SPLIT_LEFT_RATIO_PERCENT: u16 = 30;
 const SPLIT_LEFT_MIN_COLS: u16 = 28;
 const SPLIT_RIGHT_MIN_COLS: u16 = 52;
 const SPLIT_NARROW_NOTICE: &str = "Split preview hidden: terminal too narrow";
+const DIFF_TAB_WIDTH: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SplitScrollTarget {
@@ -85,6 +86,8 @@ struct FooterParts {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
+    frame.render_widget(Clear, frame.area());
+
     match app.mode() {
         Mode::List => draw_list(frame, app),
         Mode::Split => draw_split(frame, app),
@@ -1382,12 +1385,13 @@ fn entity_type_icon(entity_type: &str) -> char {
 fn format_column(number: Option<usize>, text: &str, width: usize) -> String {
     let number_text = number.map_or_else(|| "    ".to_string(), |value| format!("{value:>4}"));
     let available = width.saturating_sub(number_text.len() + 1);
-    let trimmed = if text.chars().count() > available {
+    let expanded = expand_tabs(text, DIFF_TAB_WIDTH);
+    let trimmed = if expanded.chars().count() > available {
         let keep = available.saturating_sub(1);
-        let clipped: String = text.chars().take(keep).collect();
+        let clipped: String = expanded.chars().take(keep).collect();
         format!("{clipped}…")
     } else {
-        text.to_string()
+        expanded
     };
     let content = format!("{number_text} {trimmed}");
     format!("{content:width$}")
@@ -1495,7 +1499,7 @@ fn render_unified_row(
 ) -> Line<'static> {
     if row.kind == LineKind::Header {
         return Line::styled(
-            row.text.clone(),
+            expand_tabs(&row.text, DIFF_TAB_WIDTH),
             Style::default()
                 .fg(DIFF_HUNK_FG)
                 .add_modifier(Modifier::BOLD),
@@ -1539,8 +1543,9 @@ fn render_unified_row(
         || " ".repeat(number_width),
         |value| format!("{value:>number_width$}"),
     );
-    let content_spans = highlight_text_spans(file_path, &row.text, row.kind)
-        .unwrap_or_else(|| vec![Span::styled(row.text.clone(), content_style)]);
+    let expanded_text = expand_tabs(&row.text, DIFF_TAB_WIDTH);
+    let content_spans = highlight_text_spans(file_path, &expanded_text, row.kind)
+        .unwrap_or_else(|| vec![Span::styled(expanded_text.clone(), content_style)]);
 
     let mut spans = vec![
         Span::styled(number, Style::default().fg(DIFF_GUTTER_FG)),
@@ -1670,12 +1675,13 @@ fn render_side_column(
 ) -> Vec<Span<'static>> {
     let number_text = number.map_or_else(|| "    ".to_string(), |value| format!("{value:>4}"));
     let available = width.saturating_sub(number_text.len() + 1);
-    let truncated = if text.chars().count() > available {
+    let expanded = expand_tabs(text, DIFF_TAB_WIDTH);
+    let truncated = if expanded.chars().count() > available {
         let keep = available.saturating_sub(1);
-        let clipped: String = text.chars().take(keep).collect();
+        let clipped: String = expanded.chars().take(keep).collect();
         format!("{clipped}…")
     } else {
-        text.to_string()
+        expanded
     };
 
     let mut spans = vec![Span::styled(
@@ -1691,6 +1697,31 @@ fn render_side_column(
         spans.push(Span::raw(" ".repeat(pad)));
     }
     spans
+}
+
+fn expand_tabs(text: &str, tab_width: usize) -> String {
+    let mut expanded = String::with_capacity(text.len());
+    let mut column = 0usize;
+
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let spaces = tab_width - (column % tab_width);
+                expanded.push_str(&" ".repeat(spaces));
+                column += spaces;
+            }
+            '\n' => {
+                expanded.push(ch);
+                column = 0;
+            }
+            _ => {
+                expanded.push(ch);
+                column += 1;
+            }
+        }
+    }
+
+    expanded
 }
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -2237,6 +2268,13 @@ mod tests {
     fn format_column_truncates_utf8_safely() {
         let output = format_column(Some(1), "abc漢字def", 8);
         assert!(output.contains('…'));
+    }
+
+    #[test]
+    fn expand_tabs_uses_fixed_tab_stops() {
+        assert_eq!(expand_tabs("\tX", 4), "    X");
+        assert_eq!(expand_tabs("ab\tX", 4), "ab  X");
+        assert_eq!(expand_tabs("abcd\tX", 4), "abcd    X");
     }
 
     #[test]
@@ -2795,6 +2833,38 @@ mod tests {
         assert!(
             rendered.contains("Yes"),
             "expected delete modal yes action, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn redraw_clears_stale_detail_artifacts_after_layout_change() {
+        let mut app = AppState::from_diff_result(&sample_result(), DiffView::Unified);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        type_annotation(&mut app, "needs follow-up");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed with annotation panel");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw should succeed after annotation removal");
+
+        let rendered = terminal_buffer_text(&terminal);
+        assert!(
+            !rendered.contains("needs follow-up"),
+            "expected stale annotation text to be cleared after redraw, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Annotation"),
+            "expected stale annotation panel title to be cleared after redraw, got:\n{rendered}"
         );
     }
 
